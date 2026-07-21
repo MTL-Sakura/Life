@@ -95,6 +95,12 @@ http://127.0.0.1:3000
 
 - [宝塔部署指南](./docs/BAOTA_DEPLOYMENT.md)
 
+服务器需要使用 Node.js 20.9 或更高版本，建议 Node.js 22。部署前先确认：
+
+```bash
+node -v
+```
+
 ### 宝塔 MySQL 配置
 
 在宝塔创建数据库：

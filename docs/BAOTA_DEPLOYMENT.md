@@ -19,6 +19,16 @@ Node.js 需要 20.9 或更高版本，建议使用 22。应用默认监听：
 
 宝塔 Nginx 再把域名反向代理到这个地址。
 
+部署前先在服务器确认当前命令行使用的 Node 版本：
+
+```bash
+node -v
+npm -v
+which node
+```
+
+如果看到 `v14.x`，说明宝塔当前仍在使用旧 Node。请先在宝塔 Node.js 管理器里安装并切换到 Node.js 22，然后重新打开 SSH 终端再确认一次。
+
 ## 2. 创建 MySQL 数据库
 
 在宝塔面板进入：
@@ -108,9 +118,10 @@ bash scripts/deploy.sh
 - 限制 Node 内存并构建 Next.js
 - 用 PM2 启动 `sakura-life`
 
-如果服务器配置较低，第一次安装依赖可能仍然需要几分钟。部署脚本默认使用 npm，并限制连接数：
+如果服务器配置较低，第一次安装依赖可能仍然需要几分钟。部署脚本默认使用官方 npm 源，并限制连接数：
 
 ```bash
+npm config set registry https://registry.npmjs.org
 npm config set maxsockets 1
 npm install --no-audit --no-fund --prefer-offline
 NODE_OPTIONS="--max-old-space-size=768" npm run build

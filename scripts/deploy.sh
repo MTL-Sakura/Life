@@ -20,11 +20,13 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
+node -e "const v=process.versions.node.split('.').map(Number); if (v[0] < 20 || (v[0] === 20 && v[1] < 9)) { console.error('Node.js 20.9+ is required. Current version: ' + process.versions.node + '. Install/select Node.js 22 in BaoTa first.'); process.exit(1); }"
+
 if ! command -v pm2 >/dev/null 2>&1; then
   npm install -g pm2
 fi
 
-npm config set registry "${NPM_REGISTRY:-https://registry.npmmirror.com}"
+npm config set registry "${NPM_REGISTRY:-https://registry.npmjs.org}"
 npm config set audit false
 npm config set fund false
 npm config set maxsockets 1
