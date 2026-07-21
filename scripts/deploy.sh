@@ -27,13 +27,15 @@ if ! command -v pm2 >/dev/null 2>&1; then
   npm install -g pm2
 fi
 
+pnpm config set registry "${PNPM_REGISTRY:-https://registry.npmmirror.com}"
+
 echo "==> Fetching latest code"
 git fetch origin "$BRANCH"
 git checkout "$BRANCH"
 git pull --ff-only origin "$BRANCH"
 
 echo "==> Installing dependencies"
-pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile --network-concurrency=1 --child-concurrency=1
 
 echo "==> Applying database migrations"
 pnpm prisma:deploy
@@ -42,7 +44,7 @@ echo "==> Ensuring owner account and starter data"
 pnpm db:seed
 
 echo "==> Building application"
-pnpm build
+NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=768}" pnpm build
 
 echo "==> Starting or reloading PM2"
 if pm2 describe "$APP_NAME" >/dev/null 2>&1; then
