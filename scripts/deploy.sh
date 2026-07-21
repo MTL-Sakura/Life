@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_NAME="${APP_NAME:-sakura-life}"
-APP_DIR="${APP_DIR:-/www/wwwroot/life}"
+APP_DIR="${APP_DIR:-/www/wwwroot/life.snowmoon1824.top}"
 BRANCH="${BRANCH:-main}"
 
 echo "==> Deploying ${APP_NAME} in ${APP_DIR}"

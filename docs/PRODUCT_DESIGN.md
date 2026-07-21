@@ -636,14 +636,14 @@ APP_URL="https://life.snowmoon1824.top"
 服务器目录建议：
 
 ```text
-/www/wwwroot/life
+/www/wwwroot/life.snowmoon1824.top
 ```
 
 首次部署流程：
 
 ```bash
-git clone git@github.com:MTL-Sakura/Life.git /www/wwwroot/life
-cd /www/wwwroot/life
+git clone git@github.com:MTL-Sakura/Life.git /www/wwwroot/life.snowmoon1824.top
+cd /www/wwwroot/life.snowmoon1824.top
 npm install
 npx prisma migrate deploy
 npm run build
@@ -686,7 +686,7 @@ pm2 save
 - `SERVER_USER`：SSH 用户。
 - `SERVER_SSH_KEY`：部署私钥。
 - `SERVER_PORT`：SSH 端口，通常是 `22`。
-- `DEPLOY_PATH`：服务器项目路径，例如 `/www/wwwroot/life`。
+- `DEPLOY_PATH`：服务器项目路径，例如 `/www/wwwroot/life.snowmoon1824.top`。
 
 ### 14.2 自动部署动作
 

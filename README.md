@@ -72,14 +72,14 @@ http://localhost:3000
 服务器目录建议：
 
 ```text
-/www/wwwroot/life
+/www/wwwroot/life.snowmoon1824.top
 ```
 
 首次部署：
 
 ```bash
-git clone git@github.com:MTL-Sakura/Life.git /www/wwwroot/life
-cd /www/wwwroot/life
+git clone git@github.com:MTL-Sakura/Life.git /www/wwwroot/life.snowmoon1824.top
+cd /www/wwwroot/life.snowmoon1824.top
 cp .env.production.example .env
 # 编辑 .env 后执行：
 bash scripts/deploy.sh

@@ -42,21 +42,21 @@ Node.js 需要 20.9 或更高版本，建议使用 22。应用默认监听：
 推荐目录：
 
 ```text
-/www/wwwroot/life
+/www/wwwroot/life.snowmoon1824.top
 ```
 
 首次拉取代码：
 
 ```bash
-git clone git@github.com:MTL-Sakura/Life.git /www/wwwroot/life
-cd /www/wwwroot/life
+git clone git@github.com:MTL-Sakura/Life.git /www/wwwroot/life.snowmoon1824.top
+cd /www/wwwroot/life.snowmoon1824.top
 ```
 
 如果服务器还没有配置 GitHub SSH key，也可以先用 HTTPS：
 
 ```bash
-git clone https://github.com/MTL-Sakura/Life.git /www/wwwroot/life
-cd /www/wwwroot/life
+git clone https://github.com/MTL-Sakura/Life.git /www/wwwroot/life.snowmoon1824.top
+cd /www/wwwroot/life.snowmoon1824.top
 ```
 
 ## 4. 配置 .env
@@ -89,7 +89,7 @@ APP_URL="https://life.snowmoon1824.top"
 进入项目目录：
 
 ```bash
-cd /www/wwwroot/life
+cd /www/wwwroot/life.snowmoon1824.top
 ```
 
 执行：
@@ -168,7 +168,7 @@ SERVER_HOST      服务器 IP
 SERVER_USER      SSH 用户，例如 root
 SERVER_PORT      SSH 端口，通常是 22
 SERVER_SSH_KEY   SSH 私钥内容
-DEPLOY_PATH      /www/wwwroot/life
+DEPLOY_PATH      /www/wwwroot/life.snowmoon1824.top
 ```
 
 当前仓库把 workflow 放在示例文件中：
@@ -186,7 +186,7 @@ docs/github-actions-deploy.yml.example
 之后 push 到 `main` 分支后，GitHub Actions 会自动 SSH 到服务器并执行：
 
 ```bash
-bash /www/wwwroot/life/scripts/deploy.sh
+bash /www/wwwroot/life.snowmoon1824.top/scripts/deploy.sh
 ```
 
 ## 9. 常用命令
@@ -212,6 +212,6 @@ pm2 reload sakura-life --update-env
 手动部署：
 
 ```bash
-cd /www/wwwroot/life
+cd /www/wwwroot/life.snowmoon1824.top
 bash scripts/deploy.sh
 ```
