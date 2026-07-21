@@ -100,20 +100,20 @@ bash scripts/deploy.sh
 
 脚本会自动执行：
 
-- 安装 pnpm
 - 安装 PM2
 - 拉取最新代码
-- 低并发安装依赖，只安装 Linux x64 需要的可选包
+- 通过 npm 低并发安装依赖
 - 执行 Prisma MySQL 迁移
 - 创建 owner 初始账号和默认任务
 - 限制 Node 内存并构建 Next.js
 - 用 PM2 启动 `sakura-life`
 
-如果服务器配置较低，第一次安装依赖可能仍然需要几分钟。部署脚本默认使用：
+如果服务器配置较低，第一次安装依赖可能仍然需要几分钟。部署脚本默认使用 npm，并限制连接数：
 
 ```bash
-pnpm install --frozen-lockfile --network-concurrency=1 --child-concurrency=1
-NODE_OPTIONS="--max-old-space-size=768" pnpm build
+npm config set maxsockets 1
+npm install --no-audit --no-fund --prefer-offline
+NODE_OPTIONS="--max-old-space-size=768" npm run build
 ```
 
 这样可以减少小内存服务器被依赖安装或构建压住的概率。

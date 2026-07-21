@@ -37,20 +37,20 @@ APP_URL="http://localhost:3000"
 安装依赖：
 
 ```bash
-pnpm install
+npm install
 ```
 
 初始化数据库：
 
 ```bash
-pnpm prisma:deploy
-pnpm db:seed
+npm run prisma:deploy
+npm run db:seed
 ```
 
 启动开发服务：
 
 ```bash
-pnpm dev
+npm run dev
 ```
 
 访问：
