@@ -99,6 +99,7 @@ export async function getDashboardData(userId: string) {
 
   const doneCount = dailyTasks.filter((task) => task.status === "DONE").length;
   const levelProgress = getLevelProgress(profile.xp);
+  const focusTask = getFocusTask(dailyTasks);
   const latestCheckIn = checkInsToday.at(-1);
   const gardenSignals = getGardenSignals(
     checkInsToday.map((checkIn) => checkIn.dailyTask.category),
@@ -113,6 +114,16 @@ export async function getDashboardData(userId: string) {
     },
     levelProgress,
     dailyTasks: dailyTasks.map(toDailyTaskView),
+    focusTask: focusTask
+      ? {
+          id: focusTask.id,
+          title: focusTask.title,
+          categoryLabel: categoryLabels[focusTask.category],
+          difficultyLabel: difficultyLabels[focusTask.difficulty],
+          starterGoal: focusTask.starterGoal,
+          rewardPreview: formatRewardPreview(focusTask),
+        }
+      : null,
     gardenSignals,
     gardenFeedback: latestCheckIn
       ? {
@@ -304,4 +315,26 @@ function formatRewardPreview(task: DailyTask) {
   });
 
   return `+${reward.xpGained} XP +${reward.sunlightGained} 阳光`;
+}
+
+function getFocusTask(tasks: DailyTask[]) {
+  const difficultyRank = {
+    EASY: 0,
+    NORMAL: 1,
+    HARD: 2,
+    EPIC: 3,
+  };
+
+  return tasks
+    .filter((task) => task.status === "TODO")
+    .toSorted((a, b) => {
+      const difficultyDelta = difficultyRank[a.difficulty] - difficultyRank[b.difficulty];
+
+      if (difficultyDelta !== 0) {
+        return difficultyDelta;
+      }
+
+      return a.createdAt.getTime() - b.createdAt.getTime();
+    })
+    .at(0);
 }

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { createLowEnergyTaskAction } from "@/app/actions";
+import { checkInAction, createLowEnergyTaskAction } from "@/app/actions";
 import { AppShell } from "@/components/app-shell";
 import { GardenScene } from "@/components/garden-scene";
 import { TaskCard } from "@/components/task-card";
@@ -69,6 +69,38 @@ export default async function HomePage() {
             <span>水滴 {dashboard.profile.water}</span>
             <span>樱花币 {dashboard.profile.coins}</span>
           </div>
+
+          {dashboard.focusTask ? (
+            <article className="focus-task-card">
+              <div className="focus-task-copy">
+                <p className="eyebrow">下一步</p>
+                <h2>只先做这个：{dashboard.focusTask.title}</h2>
+                <p>
+                  {dashboard.focusTask.categoryLabel} · {dashboard.focusTask.difficultyLabel}
+                </p>
+              </div>
+              <div className="focus-goal">
+                <span>启动目标</span>
+                <strong>{dashboard.focusTask.starterGoal}</strong>
+              </div>
+              <div className="focus-actions">
+                <form action={checkInAction}>
+                  <input name="dailyTaskId" type="hidden" value={dashboard.focusTask.id} />
+                  <input name="tier" type="hidden" value="STARTER" />
+                  <button className="primary-action" type="submit">
+                    我先做启动版
+                  </button>
+                </form>
+                <span>{dashboard.focusTask.rewardPreview}</span>
+              </div>
+            </article>
+          ) : dashboard.totalCount > 0 ? (
+            <article className="focus-task-card focus-task-complete">
+              <p className="eyebrow">下一步</p>
+              <h2>今天的庭院已经照顾好了</h2>
+              <p>剩下的时间可以轻一点，明天再继续。</p>
+            </article>
+          ) : null}
 
           <div className="task-list">
             {dashboard.dailyTasks.length > 0 ? (

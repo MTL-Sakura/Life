@@ -363,6 +363,87 @@ select:focus {
   margin: 18px 0;
 }
 
+.focus-task-card {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(232, 216, 215, 0.9);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(255, 232, 239, 0.82), rgba(255, 252, 242, 0.9)),
+    #fff;
+  padding: 16px;
+  box-shadow: 0 14px 34px rgba(115, 73, 86, 0.1);
+}
+
+.focus-task-copy {
+  display: grid;
+  gap: 5px;
+}
+
+.focus-task-copy h2,
+.focus-task-copy p,
+.focus-task-complete h2,
+.focus-task-complete p {
+  margin: 0;
+}
+
+.focus-task-copy h2,
+.focus-task-complete h2 {
+  font-size: 1.08rem;
+  line-height: 1.25;
+}
+
+.focus-task-copy p,
+.focus-task-complete p {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.focus-goal {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 12px;
+}
+
+.focus-goal span {
+  color: var(--pink-strong);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.focus-goal strong {
+  color: var(--ink);
+  font-size: 1rem;
+  line-height: 1.45;
+}
+
+.focus-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.focus-actions form {
+  min-width: 170px;
+}
+
+.focus-actions button {
+  width: 100%;
+}
+
+.focus-actions span {
+  color: #9b6c16;
+  font-size: 0.8rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
 .resource-row span,
 .settlement-strip div {
   min-height: 54px;
@@ -2000,6 +2081,19 @@ select:focus {
 
   .task-actions {
     grid-template-columns: 1fr;
+  }
+
+  .focus-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .focus-actions form {
+    min-width: 0;
+  }
+
+  .focus-actions span {
+    white-space: normal;
   }
 
   .sakura-tree {
