@@ -1,9 +1,21 @@
+import type { GardenSignal } from "@/lib/garden";
+
 type GardenSceneProps = {
   stage: number;
   mood?: "morning" | "night";
+  signals?: GardenSignal[];
+  streak?: number;
 };
 
-export function GardenScene({ stage, mood = "morning" }: GardenSceneProps) {
+export function GardenScene({
+  stage,
+  mood = "morning",
+  signals = [],
+  streak = 0,
+}: GardenSceneProps) {
+  const signalSet = new Set(signals);
+  const showStreak = streak >= 3 || signalSet.has("streak");
+
   return (
     <section className={`garden-scene garden-${mood} tree-stage-${stage}`} aria-label="樱花庭院">
       <div className="garden-sky" />
@@ -30,6 +42,14 @@ export function GardenScene({ stage, mood = "morning" }: GardenSceneProps) {
           <span />
           <span />
         </div>
+        {showStreak ? (
+          <div className="auto-decor streak-flags" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+            <span />
+          </div>
+        ) : null}
         <div className="sakura-tree">
           <div className="tree-trunk">
             <span className="tree-knot" />
@@ -51,6 +71,39 @@ export function GardenScene({ stage, mood = "morning" }: GardenSceneProps) {
         <div className="tea-table">
           <span />
         </div>
+        {signalSet.has("study") ? (
+          <div className="auto-decor study-books" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+        ) : null}
+        {signalSet.has("fitness") ? (
+          <div className="auto-decor training-corner" aria-hidden="true">
+            <span />
+            <span />
+          </div>
+        ) : null}
+        {signalSet.has("sleep") ? (
+          <div className="auto-decor rest-lamp" aria-hidden="true">
+            <span />
+          </div>
+        ) : null}
+        {signalSet.has("life") ? (
+          <div className="auto-decor watering-can" aria-hidden="true">
+            <span />
+          </div>
+        ) : null}
+        {signalSet.has("creation") ? (
+          <div className="auto-decor easel" aria-hidden="true">
+            <span />
+          </div>
+        ) : null}
+        {signalSet.has("work") ? (
+          <div className="auto-decor focus-board" aria-hidden="true">
+            <span />
+          </div>
+        ) : null}
         <div className="flower-bed flower-bed-left">
           <span />
           <span />

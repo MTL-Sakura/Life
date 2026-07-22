@@ -14,7 +14,20 @@ export default async function HomePage() {
     <AppShell active="today">
       <section className="today-grid">
         <div className="garden-column">
-          <GardenScene mood="morning" stage={dashboard.gardenState.treeStage} />
+          <GardenScene
+            mood="morning"
+            signals={dashboard.gardenSignals}
+            stage={dashboard.gardenState.treeStage}
+            streak={dashboard.profile.currentStreak}
+          />
+          {dashboard.gardenFeedback ? (
+            <section className="garden-feedback" aria-label="庭院回应">
+              <p className="eyebrow">庭院回应</p>
+              <h2>{dashboard.gardenFeedback.title}</h2>
+              <p>{dashboard.gardenFeedback.message}</p>
+              <span>{dashboard.gardenFeedback.reward}</span>
+            </section>
+          ) : null}
           <section className="settlement-strip" aria-label="今日进度">
             <div>
               <span className="metric-value">

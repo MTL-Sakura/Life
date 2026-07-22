@@ -1,4 +1,9 @@
 import type { CompletionTier, DailyTask } from "@prisma/client";
+import {
+  gardenSignalDetails,
+  getGardenEcho,
+  getGardenSignals,
+} from "@/lib/garden";
 import { prisma } from "@/lib/prisma";
 import {
   categoryLabels,
@@ -80,11 +85,25 @@ export async function getDashboardData(userId: string) {
           lt: end,
         },
       },
+      include: {
+        dailyTask: {
+          select: {
+            title: true,
+            category: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "asc" },
     }),
   ]);
 
   const doneCount = dailyTasks.filter((task) => task.status === "DONE").length;
   const levelProgress = getLevelProgress(profile.xp);
+  const latestCheckIn = checkInsToday.at(-1);
+  const gardenSignals = getGardenSignals(
+    checkInsToday.map((checkIn) => checkIn.dailyTask.category),
+    profile.currentStreak,
+  );
 
   return {
     profile,
@@ -94,6 +113,14 @@ export async function getDashboardData(userId: string) {
     },
     levelProgress,
     dailyTasks: dailyTasks.map(toDailyTaskView),
+    gardenSignals,
+    gardenFeedback: latestCheckIn
+      ? {
+          title: `庭院回应了「${latestCheckIn.dailyTask.title}」`,
+          message: getGardenEcho(latestCheckIn.dailyTask.category),
+          reward: `+${latestCheckIn.xpGained} XP · +${latestCheckIn.sunlightGained} 阳光 · +${latestCheckIn.coinsGained} 樱花币`,
+        }
+      : null,
     doneCount,
     totalCount: dailyTasks.length,
     todayReward: checkInsToday.reduce(
@@ -137,14 +164,38 @@ export async function getTaskTemplateForEdit(userId: string, id: string) {
 }
 
 export async function getGardenData(userId: string) {
-  const [profile, gardenState] = await Promise.all([
+  const recentStart = new Date();
+  recentStart.setHours(0, 0, 0, 0);
+  recentStart.setDate(recentStart.getDate() - 6);
+
+  const [profile, gardenState, recentCheckIns] = await Promise.all([
     prisma.profile.findUniqueOrThrow({ where: { userId } }),
     prisma.gardenState.findUniqueOrThrow({ where: { userId } }),
+    prisma.checkIn.findMany({
+      where: {
+        userId,
+        date: {
+          gte: recentStart,
+        },
+      },
+      include: {
+        dailyTask: {
+          select: {
+            category: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    }),
   ]);
 
   const treeStage = getTreeStageFromXp(gardenState.treeXp);
   const nextStageXp = treeStage >= 6 ? gardenState.treeXp : treeStage * 120;
   const remainingSunlight = Math.max(0, nextStageXp - gardenState.treeXp);
+  const gardenSignals = getGardenSignals(
+    recentCheckIns.map((checkIn) => checkIn.dailyTask.category),
+    profile.currentStreak,
+  );
 
   return {
     profile,
@@ -154,6 +205,8 @@ export async function getGardenData(userId: string) {
       remainingSunlight,
       progressPercent: treeStage >= 6 ? 100 : Math.round((gardenState.treeXp / nextStageXp) * 100),
     },
+    gardenSignals,
+    gardenMemories: gardenSignals.map((signal) => gardenSignalDetails[signal]).slice(0, 4),
   };
 }
 

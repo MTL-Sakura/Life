@@ -13,14 +13,19 @@ const decorations = [
 
 export default async function GardenPage() {
   const session = await requireSession();
-  const { gardenState, profile } = await getGardenData(session.userId);
+  const { gardenMemories, gardenSignals, gardenState, profile } = await getGardenData(session.userId);
 
   return (
     <AppShell active="garden">
       <PageHeader eyebrow="庭院" title="小树正在慢慢开花" />
 
       <section className="garden-detail">
-        <GardenScene mood="morning" stage={gardenState.treeStage} />
+        <GardenScene
+          mood="morning"
+          signals={gardenSignals}
+          stage={gardenState.treeStage}
+          streak={profile.currentStreak}
+        />
         <aside className="growth-panel">
           <div className="growth-heading">
             <p className="eyebrow">成长</p>
@@ -59,6 +64,17 @@ export default async function GardenPage() {
               </article>
             ))}
           </div>
+          {gardenMemories.length > 0 ? (
+            <section className="garden-memory" aria-label="自动变化记录">
+              <p className="eyebrow">自动变化</p>
+              {gardenMemories.map((memory) => (
+                <article key={memory.title}>
+                  <h3>{memory.title}</h3>
+                  <p>{memory.text}</p>
+                </article>
+              ))}
+            </section>
+          ) : null}
         </aside>
       </section>
     </AppShell>
