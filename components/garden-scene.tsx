@@ -5,33 +5,66 @@ type GardenSceneProps = {
 
 export function GardenScene({ stage, mood = "morning" }: GardenSceneProps) {
   return (
-    <section className={`garden-scene garden-${mood}`} aria-label="樱花庭院">
+    <section className={`garden-scene garden-${mood} tree-stage-${stage}`} aria-label="樱花庭院">
+      <div className="garden-sky" />
       <div className="sun-haze" />
+      <div className="sun-disc" />
       <div className="distant-hill hill-left" />
       <div className="distant-hill hill-right" />
       <div className="cloud cloud-left" />
       <div className="cloud cloud-right" />
       <div className="garden-ground">
+        <div className="garden-fence">
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+        <div className="water-ribbon" />
         <div className="pond" />
         <div className="stone-path">
           <span />
           <span />
           <span />
+          <span />
+          <span />
         </div>
-        <div className={`sakura-tree tree-stage-${stage}`}>
+        <div className="sakura-tree">
+          <div className="tree-trunk">
+            <span className="tree-knot" />
+          </div>
           <div className="tree-crown crown-back" />
           <div className="tree-crown crown-left" />
           <div className="tree-crown crown-main" />
           <div className="tree-crown crown-right" />
-          <div className="tree-trunk" />
+          <span className="blossom-dot blossom-one" />
+          <span className="blossom-dot blossom-two" />
+          <span className="blossom-dot blossom-three" />
+          <span className="blossom-dot blossom-four" />
+          <span className="blossom-dot blossom-five" />
         </div>
-        <div className="garden-bench" />
+        <div className="garden-bench">
+          <span />
+        </div>
         <div className="lantern lantern-left" />
-        <div className="flower-bed flower-bed-left" />
-        <div className="flower-bed flower-bed-right" />
+        <div className="tea-table">
+          <span />
+        </div>
+        <div className="flower-bed flower-bed-left">
+          <span />
+          <span />
+          <span />
+        </div>
+        <div className="flower-bed flower-bed-right">
+          <span />
+          <span />
+          <span />
+        </div>
         <div className="petal petal-one" />
         <div className="petal petal-two" />
         <div className="petal petal-three" />
+        <div className="petal petal-four" />
       </div>
     </section>
   );
