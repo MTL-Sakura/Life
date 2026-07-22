@@ -4,6 +4,7 @@ set -euo pipefail
 APP_NAME="${APP_NAME:-sakura-life}"
 APP_DIR="${APP_DIR:-/www/wwwroot/life.snowmoon1824.top}"
 BRANCH="${BRANCH:-main}"
+NPM_REGISTRY_VALUE="${NPM_REGISTRY:-}"
 
 find_pm2() {
   local candidate npm_prefix
@@ -47,8 +48,22 @@ fi
 
 node -e "const v=process.versions.node.split('.').map(Number); if (v[0] < 20 || (v[0] === 20 && v[1] < 9)) { console.error('Node.js 20.9+ is required. Current version: ' + process.versions.node + '. Install/select Node.js 22 in BaoTa first.'); process.exit(1); }"
 
+if [[ -z "$NPM_REGISTRY_VALUE" ]]; then
+  NPM_REGISTRY_VALUE="$(npm config get registry 2>/dev/null || true)"
+fi
+if [[ -z "$NPM_REGISTRY_VALUE" || "$NPM_REGISTRY_VALUE" == "undefined" || "$NPM_REGISTRY_VALUE" == "null" ]]; then
+  NPM_REGISTRY_VALUE="https://registry.npmjs.org"
+fi
+
+npm config set registry "$NPM_REGISTRY_VALUE"
+npm config set audit false
+npm config set fund false
+npm config set maxsockets 1
+npm config set fetch-retries 2
+npm config set fetch-timeout 120000
+
 if ! command -v pm2 >/dev/null 2>&1; then
-  npm install -g pm2
+  npm install -g pm2 --no-audit --no-fund --registry "$NPM_REGISTRY_VALUE" --fetch-retries=2 --fetch-timeout=120000
 fi
 
 PM2_BIN="$(find_pm2 || true)"
@@ -57,11 +72,6 @@ if [[ -z "$PM2_BIN" ]]; then
   echo "Try opening a new SSH terminal, or install PM2 from BaoTa PM2 manager."
   exit 1
 fi
-
-npm config set registry "${NPM_REGISTRY:-https://registry.npmjs.org}"
-npm config set audit false
-npm config set fund false
-npm config set maxsockets 1
 
 echo "==> Fetching latest code"
 git fetch origin "$BRANCH"
