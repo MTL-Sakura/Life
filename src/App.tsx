@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlarmClock,
   Archive,
@@ -136,6 +136,58 @@ function berlinDate() {
     day: 'numeric',
     weekday: 'long',
   }).format(new Date())
+}
+
+type DashboardNotification = {
+  key: string
+  taskId: number
+  title: string
+  detail: string
+  tone: 'overdue' | 'upcoming' | 'due'
+  timestamp: number
+}
+
+function notificationTime(value: string) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Europe/Berlin',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(value))
+}
+
+function taskNotifications(tasks: Task[]): DashboardNotification[] {
+  const now = Date.now()
+  const sixHours = 6 * 60 * 60 * 1000
+  const oneDay = 24 * 60 * 60 * 1000
+
+  return tasks.flatMap((task): DashboardNotification[] => {
+    if (task.completed || task.status === 'cancelled') return []
+    if (task.dueAt) {
+      const due = new Date(task.dueAt).getTime()
+      if (Number.isFinite(due) && due < now) {
+        return [{ key: `overdue-${task.id}-${task.dueAt}`, taskId: task.id, title: task.title, detail: `已逾期 · ${notificationTime(task.dueAt)}`, tone: 'overdue', timestamp: due }]
+      }
+    }
+    if (task.startAt) {
+      const start = new Date(task.startAt).getTime()
+      if (Number.isFinite(start) && start >= now && start - now <= sixHours) {
+        return [{ key: `upcoming-${task.id}-${task.startAt}`, taskId: task.id, title: task.title, detail: `即将开始 · ${notificationTime(task.startAt)}`, tone: 'upcoming', timestamp: start }]
+      }
+    }
+    if (task.dueAt) {
+      const due = new Date(task.dueAt).getTime()
+      if (Number.isFinite(due) && due >= now && due - now <= oneDay) {
+        return [{ key: `due-${task.id}-${task.dueAt}`, taskId: task.id, title: task.title, detail: `即将到期 · ${notificationTime(task.dueAt)}`, tone: 'due', timestamp: due }]
+      }
+    }
+    return []
+  }).sort((left, right) => {
+    const weights = { overdue: 0, upcoming: 1, due: 2 }
+    return weights[left.tone] - weights[right.tone] || left.timestamp - right.timestamp
+  }).slice(0, 6)
 }
 
 function currentWeekDates() {
@@ -702,7 +754,33 @@ function Sidebar({ page, setPage, inboxCount, displayName }: { page: PageKey; se
   )
 }
 
-function Topbar({ page, onMenu }: { page: PageKey; onMenu: () => void }) {
+function Topbar({ page, tasks, onMenu, onOpenTask, onOpenReminderSettings }: {
+  page: PageKey
+  tasks: Task[]
+  onMenu: () => void
+  onOpenTask: (taskId: number) => void
+  onOpenReminderSettings: () => void
+}) {
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const notificationRef = useRef<HTMLDivElement>(null)
+  const notifications = useMemo(() => taskNotifications(tasks), [tasks])
+
+  useEffect(() => {
+    if (!notificationsOpen) return
+    function closeOnOutside(event: PointerEvent) {
+      if (!notificationRef.current?.contains(event.target as Node)) setNotificationsOpen(false)
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setNotificationsOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [notificationsOpen])
+
   return (
     <header className="topbar">
       <button className="icon-button mobile-menu" onClick={onMenu} aria-label="打开导航">
@@ -714,10 +792,39 @@ function Topbar({ page, onMenu }: { page: PageKey; onMenu: () => void }) {
       </div>
       <div className="topbar-actions">
         <button className="search-button"><Search size={17} /><span>搜索</span><kbd>⌘ K</kbd></button>
-        <button className="icon-button notification-button" aria-label="通知">
-          <Bell size={19} />
-          <span />
-        </button>
+        <div className="notification-wrap" ref={notificationRef}>
+          <button
+            className={`icon-button notification-button ${notificationsOpen ? 'active' : ''}`}
+            aria-label="通知"
+            aria-expanded={notificationsOpen}
+            aria-controls="notification-panel"
+            onClick={() => setNotificationsOpen((open) => !open)}
+          >
+            <Bell size={19} />
+            {notifications.length > 0 && <span className="notification-dot" />}
+          </button>
+          {notificationsOpen && (
+            <section className="notification-panel" id="notification-panel" aria-label="通知列表">
+              <header>
+                <div><strong>通知</strong>{notifications.length > 0 && <span>{notifications.length}</span>}</div>
+                <button type="button" className="row-action" aria-label="提醒设置" title="提醒设置" onClick={() => { setNotificationsOpen(false); onOpenReminderSettings() }}><Settings size={17} /></button>
+              </header>
+              {notifications.length === 0 ? (
+                <div className="notification-empty"><CheckCircle2 size={22} /><strong>现在没有新提醒</strong><span>今天的安排都在掌握中。</span></div>
+              ) : (
+                <div className="notification-list">
+                  {notifications.map((notification) => (
+                    <button type="button" key={notification.key} onClick={() => { setNotificationsOpen(false); onOpenTask(notification.taskId) }}>
+                      <span className={`notification-indicator ${notification.tone}`} />
+                      <span><strong>{notification.title}</strong><small>{notification.detail}</small></span>
+                      <ChevronRight size={15} />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+        </div>
       </div>
     </header>
   )
@@ -1914,7 +2021,7 @@ export default function App() {
         <Sidebar page={page} setPage={navigate} inboxCount={inboxCount} displayName={settings.displayName} />
       </div>
       <div className="app-main">
-        <Topbar page={page} onMenu={() => setMenuOpen(true)} />
+        <Topbar page={page} tasks={tasks} onMenu={() => setMenuOpen(true)} onOpenTask={openTask} onOpenReminderSettings={() => navigateSettings('reminders')} />
         {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} onNavigate={navigate} onAiPlan={openAiPlanner} />}
         {page === 'inbox' && <InboxPage tasks={tasks} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} onNewTask={() => setEditor({ type: 'task' })} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} />}
         {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor({ type: 'task', schedule: true })} onOpenTask={openTask} />}
