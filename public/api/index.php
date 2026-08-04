@@ -95,11 +95,10 @@ switch ($action) {
             'reminder_at' => $reminderAt,
         ]);
         $taskId = (int) $db->lastInsertId();
-        $subtaskStatement = $db->prepare('INSERT INTO subtasks (task_id, title, position) VALUES (?, ?, ?)');
-        foreach ((array) ($input['subtasks'] ?? []) as $position => $subtask) {
-            $subtask = trim((string) $subtask);
-            if ($subtask !== '') {
-                $subtaskStatement->execute([$taskId, $subtask, $position]);
+        $subtaskStatement = $db->prepare('INSERT INTO subtasks (task_id, title, completed, position) VALUES (?, ?, ?, ?)');
+        foreach (normalizedSubtasks($input['subtasks'] ?? []) as $position => $subtask) {
+            if ($subtask['title'] !== '') {
+                $subtaskStatement->execute([$taskId, $subtask['title'], (int) $subtask['completed'], $position]);
             }
         }
         Http::json(['task' => findTask($db, $taskId, $userId, $timezone)], 201);
@@ -137,6 +136,9 @@ switch ($action) {
             }
             $updates[$column] = $value;
         }
+        if (array_key_exists('title', $updates) && $updates['title'] === '') {
+            Http::json(['error' => '任务标题不能为空。'], 422);
+        }
 
         if (array_key_exists('priority', $input)) {
             $updates['priority'] = validPriority((string) $input['priority']);
@@ -149,30 +151,63 @@ switch ($action) {
                 $updates[$column] = DateTimes::toUtc(nullableString($input[$inputKey]), $timezone);
             }
         }
+        if (array_key_exists('startAt', $input)
+            && !array_key_exists('status', $input)
+            && !array_key_exists('completed', $input)
+            && $current['status'] !== 'completed') {
+            $updates['status'] = $updates['start_at'] === null ? 'inbox' : 'planned';
+        }
         if (array_key_exists('completed', $input)) {
             $completed = (bool) $input['completed'];
             $updates['status'] = $completed ? 'completed' : (($current['start_at'] ?? null) ? 'planned' : 'inbox');
             $updates['completed_at'] = $completed ? gmdate('Y-m-d H:i:s') : null;
         }
 
-        $effectiveStart = $updates['start_at'] ?? $current['start_at'];
+        $effectiveStart = array_key_exists('start_at', $updates) ? $updates['start_at'] : $current['start_at'];
         $effectiveReminderMinutes = array_key_exists('reminder_minutes', $updates) ? $updates['reminder_minutes'] : $current['reminder_minutes'];
         if (array_key_exists('start_at', $updates) || array_key_exists('reminder_minutes', $updates)) {
             $updates['reminder_at'] = reminderAt($effectiveStart, $effectiveReminderMinutes === null ? null : (int) $effectiveReminderMinutes);
             $updates['reminder_sent_at'] = null;
         }
 
-        if ($updates === []) {
+        $subtasksChanged = array_key_exists('subtasks', $input);
+        if ($updates === [] && !$subtasksChanged) {
             Http::json(['task' => findTask($db, $taskId, $userId, $timezone)]);
         }
-        foreach ($updates as $column => $value) {
-            $params[] = $value;
+
+        $shouldGenerateNext = array_key_exists('completed', $input)
+            && (bool) $input['completed']
+            && $current['status'] !== 'completed'
+            && nullableString($current['recurrence_rule'] ?? null) !== null;
+        $nextTaskId = null;
+        $db->beginTransaction();
+        try {
+            if ($updates !== []) {
+                foreach ($updates as $value) {
+                    $params[] = $value;
+                }
+                $params[] = $taskId;
+                $params[] = $userId;
+                $sql = 'UPDATE tasks SET ' . implode(', ', array_map(static fn (string $column): string => "{$column} = ?", array_keys($updates))) . ' WHERE id = ? AND user_id = ?';
+                $db->prepare($sql)->execute($params);
+            }
+            if ($subtasksChanged) {
+                syncTaskSubtasks($db, $taskId, (array) ($input['subtasks'] ?? []));
+            }
+            if ($shouldGenerateNext) {
+                $nextTaskId = createNextRecurringTask($db, ownedRow($db, 'tasks', $taskId, $userId));
+            }
+            $db->commit();
+        } catch (Throwable $error) {
+            $db->rollBack();
+            throw $error;
         }
-        $params[] = $taskId;
-        $params[] = $userId;
-        $sql = 'UPDATE tasks SET ' . implode(', ', array_map(static fn (string $column): string => "{$column} = ?", array_keys($updates))) . ' WHERE id = ? AND user_id = ?';
-        $db->prepare($sql)->execute($params);
-        Http::json(['task' => findTask($db, $taskId, $userId, $timezone)]);
+
+        $response = ['task' => findTask($db, $taskId, $userId, $timezone)];
+        if ($nextTaskId !== null) {
+            $response['nextTask'] = findTask($db, $nextTaskId, $userId, $timezone);
+        }
+        Http::json($response);
 
     case 'tasks.delete':
         Http::requireMethod('DELETE', 'POST');
@@ -180,6 +215,25 @@ switch ($action) {
         $statement = $db->prepare('DELETE FROM tasks WHERE id = ? AND user_id = ?');
         $statement->execute([(int) ($input['id'] ?? 0), $userId]);
         Http::json(['ok' => true]);
+
+    case 'tasks.subtask':
+        Http::requireMethod('PATCH', 'POST');
+        $input = Http::input();
+        $taskId = (int) ($input['taskId'] ?? 0);
+        $subtaskId = (int) ($input['id'] ?? 0);
+        $statement = $db->prepare(
+            'SELECT subtasks.id FROM subtasks INNER JOIN tasks ON tasks.id = subtasks.task_id
+             WHERE subtasks.id = ? AND subtasks.task_id = ? AND tasks.user_id = ? LIMIT 1'
+        );
+        $statement->execute([$subtaskId, $taskId, $userId]);
+        if (!$statement->fetchColumn()) {
+            Http::json(['error' => '子任务不存在。'], 404);
+        }
+        $db->prepare('UPDATE subtasks SET completed = ? WHERE id = ?')->execute([
+            (int) (bool) ($input['completed'] ?? false),
+            $subtaskId,
+        ]);
+        Http::json(['task' => findTask($db, $taskId, $userId, $timezone)]);
 
     case 'habits.create':
         Http::requireMethod('POST');
@@ -335,7 +389,12 @@ function bootstrapData(PDO $db, int $userId, string $timezone): array
          ORDER BY tasks.status = "completed", tasks.start_at IS NULL, tasks.start_at, tasks.created_at DESC'
     );
     $tasksStatement->execute([$userId]);
-    $tasks = array_map(static fn (array $row): array => Views::task($row, $timezone), $tasksStatement->fetchAll());
+    $taskRows = $tasksStatement->fetchAll();
+    $subtasks = subtaskMap($db, array_map(static fn (array $row): int => (int) $row['id'], $taskRows));
+    $tasks = array_map(
+        static fn (array $row): array => Views::task($row, $timezone, $subtasks[(int) $row['id']] ?? []),
+        $taskRows
+    );
 
     $categoryStatement = $db->prepare('SELECT id, name, color FROM categories WHERE user_id = ? ORDER BY id');
     $categoryStatement->execute([$userId]);
@@ -421,7 +480,138 @@ function findTask(PDO $db, int $taskId, int $userId, string $timezone): array
         Http::json(['error' => '任务不存在。'], 404);
     }
 
-    return Views::task($task, $timezone);
+    return Views::task($task, $timezone, taskSubtasks($db, $taskId));
+}
+
+function taskSubtasks(PDO $db, int $taskId): array
+{
+    $statement = $db->prepare('SELECT id, title, completed, position FROM subtasks WHERE task_id = ? ORDER BY position, id');
+    $statement->execute([$taskId]);
+    return $statement->fetchAll();
+}
+
+function subtaskMap(PDO $db, array $taskIds): array
+{
+    if ($taskIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($taskIds), '?'));
+    $statement = $db->prepare("SELECT id, task_id, title, completed, position FROM subtasks WHERE task_id IN ({$placeholders}) ORDER BY task_id, position, id");
+    $statement->execute($taskIds);
+    $map = [];
+    foreach ($statement->fetchAll() as $subtask) {
+        $map[(int) $subtask['task_id']][] = $subtask;
+    }
+    return $map;
+}
+
+function normalizedSubtasks(mixed $value): array
+{
+    $normalized = [];
+    foreach ((array) $value as $subtask) {
+        if (is_array($subtask)) {
+            $title = trim((string) ($subtask['title'] ?? ''));
+            $id = nullableInt($subtask['id'] ?? null);
+            $completed = (bool) ($subtask['completed'] ?? false);
+        } else {
+            $title = trim((string) $subtask);
+            $id = null;
+            $completed = false;
+        }
+        if ($title !== '') {
+            $normalized[] = ['id' => $id, 'title' => $title, 'completed' => $completed];
+        }
+    }
+    return $normalized;
+}
+
+function syncTaskSubtasks(PDO $db, int $taskId, array $input): void
+{
+    $subtasks = normalizedSubtasks($input);
+    $existingIds = array_map(static fn (array $subtask): int => (int) $subtask['id'], taskSubtasks($db, $taskId));
+    $keptIds = [];
+    $update = $db->prepare('UPDATE subtasks SET title = ?, completed = ?, position = ? WHERE id = ? AND task_id = ?');
+    $insert = $db->prepare('INSERT INTO subtasks (task_id, title, completed, position) VALUES (?, ?, ?, ?)');
+    foreach ($subtasks as $position => $subtask) {
+        if ($subtask['id'] !== null && in_array((int) $subtask['id'], $existingIds, true)) {
+            $update->execute([$subtask['title'], (int) $subtask['completed'], $position, $subtask['id'], $taskId]);
+            $keptIds[] = (int) $subtask['id'];
+            continue;
+        }
+        $insert->execute([$taskId, $subtask['title'], (int) $subtask['completed'], $position]);
+        $keptIds[] = (int) $db->lastInsertId();
+    }
+
+    if ($keptIds === []) {
+        $db->prepare('DELETE FROM subtasks WHERE task_id = ?')->execute([$taskId]);
+        return;
+    }
+    $placeholders = implode(', ', array_fill(0, count($keptIds), '?'));
+    $db->prepare("DELETE FROM subtasks WHERE task_id = ? AND id NOT IN ({$placeholders})")->execute([$taskId, ...$keptIds]);
+}
+
+function createNextRecurringTask(PDO $db, array $task): ?int
+{
+    $rule = strtoupper((string) ($task['recurrence_rule'] ?? ''));
+    $interval = match (true) {
+        str_starts_with($rule, 'FREQ=DAILY') => new DateInterval('P1D'),
+        str_starts_with($rule, 'FREQ=WEEKLY') => new DateInterval('P1W'),
+        str_starts_with($rule, 'FREQ=MONTHLY') => new DateInterval('P1M'),
+        default => null,
+    };
+    if ($interval === null) {
+        return null;
+    }
+
+    $existing = $db->prepare('SELECT id FROM tasks WHERE recurrence_source_task_id = ? LIMIT 1');
+    $existing->execute([(int) $task['id']]);
+    $existingId = $existing->fetchColumn();
+    if ($existingId !== false) {
+        return (int) $existingId;
+    }
+
+    $nextStart = shiftedRecurringTimestamp($task['start_at'] ?? null, $interval);
+    $nextEnd = shiftedRecurringTimestamp($task['end_at'] ?? null, $interval);
+    $nextDue = shiftedRecurringTimestamp($task['due_at'] ?? null, $interval);
+    if ($nextStart === null && $nextEnd === null && $nextDue === null) {
+        return null;
+    }
+    $reminderMinutes = isset($task['reminder_minutes']) ? (int) $task['reminder_minutes'] : null;
+
+    $statement = $db->prepare(
+        'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, recurrence_rule, recurrence_source_task_id, reminder_minutes, reminder_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    $statement->execute([
+        (int) $task['user_id'],
+        nullableInt($task['project_id'] ?? null),
+        nullableInt($task['category_id'] ?? null),
+        $task['title'],
+        $task['notes'] ?? '',
+        $nextStart === null ? 'inbox' : 'planned',
+        $task['priority'],
+        $nextStart,
+        $nextEnd,
+        $nextDue,
+        (int) $task['estimated_minutes'],
+        $task['recurrence_rule'],
+        (int) $task['id'],
+        $reminderMinutes,
+        reminderAt($nextStart, $reminderMinutes),
+    ]);
+    $nextTaskId = (int) $db->lastInsertId();
+    $copy = $db->prepare('INSERT INTO subtasks (task_id, title, completed, position) SELECT ?, title, 0, position FROM subtasks WHERE task_id = ?');
+    $copy->execute([$nextTaskId, (int) $task['id']]);
+    return $nextTaskId;
+}
+
+function shiftedRecurringTimestamp(mixed $value, DateInterval $interval): ?string
+{
+    if ($value === null || $value === '') {
+        return null;
+    }
+    return (new DateTimeImmutable((string) $value, new DateTimeZone('UTC')))->add($interval)->format('Y-m-d H:i:s');
 }
 
 function ownedRow(PDO $db, string $table, int $id, int $userId): array
@@ -547,7 +737,7 @@ function userDataExport(PDO $db, int $userId, string $timezone): array
     }
 
     return [
-        'schemaVersion' => 1,
+        'schemaVersion' => 2,
         'exportedAt' => gmdate('c'),
         'timezone' => $timezone,
         'data' => $data,

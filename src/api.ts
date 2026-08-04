@@ -1,4 +1,4 @@
-import type { BootstrapData, Habit, Project, SessionUser, Task, UserSettings } from './types'
+import type { BootstrapData, Habit, Project, SessionUser, Subtask, Task, UserSettings } from './types'
 
 let csrfToken: string | null = null
 
@@ -55,18 +55,22 @@ export const api = {
     return result
   },
 
-  async createTask(input: Partial<Task> & { title: string; subtasks?: string[] }): Promise<Task> {
+  async createTask(input: Omit<Partial<Task>, 'subtasks'> & { title: string; subtasks?: Array<Partial<Subtask> & { title: string }> }): Promise<Task> {
     const result = await request<{ task: Task }>('tasks.create', { method: 'POST', body: input })
     return result.task
   },
 
-  async updateTask(input: Partial<Task> & { id: number }): Promise<Task> {
-    const result = await request<{ task: Task }>('tasks.update', { method: 'PATCH', body: input })
-    return result.task
+  async updateTask(input: Partial<Task> & { id: number }): Promise<{ task: Task; nextTask?: Task }> {
+    return request<{ task: Task; nextTask?: Task }>('tasks.update', { method: 'PATCH', body: input })
   },
 
   async deleteTask(id: number): Promise<void> {
     await request('tasks.delete', { method: 'DELETE', body: { id } })
+  },
+
+  async updateSubtask(taskId: number, id: number, completed: boolean): Promise<Task> {
+    const result = await request<{ task: Task }>('tasks.subtask', { method: 'PATCH', body: { taskId, id, completed } })
+    return result.task
   },
 
   async createHabit(input: Partial<Habit> & { name: string }): Promise<BootstrapData> {

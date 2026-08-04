@@ -5,6 +5,7 @@ import {
   BarChart3,
   Bell,
   BookOpen,
+  CalendarClock,
   CalendarDays,
   CalendarRange,
   Check,
@@ -21,7 +22,6 @@ import {
   FolderKanban,
   Inbox,
   LayoutDashboard,
-  ListFilter,
   LockKeyhole,
   LogOut,
   Mail,
@@ -29,6 +29,8 @@ import {
   Moon,
   MoreHorizontal,
   Plus,
+  Pencil,
+  Repeat2,
   RotateCcw,
   Search,
   Settings,
@@ -37,13 +39,14 @@ import {
   Sun,
   Target,
   TimerReset,
+  Trash2,
   TrendingUp,
   User,
   X,
 } from 'lucide-react'
 import { api } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
-import type { BootstrapData, Category, Habit, PageKey, Project, ReviewSummary, Task, UserSettings } from './types'
+import type { BootstrapData, Category, Habit, PageKey, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
   { key: 'today' as const, label: '今日', icon: LayoutDashboard },
@@ -88,10 +91,18 @@ const defaultReview: ReviewSummary = {
 
 const palette = ['#496d5b', '#b96552', '#58748f', '#a1843e', '#7a6b87']
 
-type TaskDraft = Partial<Task> & {
+type TaskSubtaskDraft = Partial<Subtask> & { title: string }
+
+type TaskDraft = Omit<Partial<Task>, 'subtasks'> & {
   title: string
-  subtasks?: string[]
+  subtasks?: TaskSubtaskDraft[]
 }
+
+type EditorState =
+  | { type: 'task'; taskId?: number; schedule?: boolean }
+  | { type: 'project' }
+  | { type: 'habit' }
+  | null
 
 type SettingsSectionKey = 'account' | 'reminders' | 'schedule' | 'data'
 
@@ -151,6 +162,39 @@ function currentWeekDateIso(dayIndex: number) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
+function berlinIsoDate() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Berlin',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
+}
+
+function recurrenceLabel(rule?: string | null) {
+  if (rule?.startsWith('FREQ=DAILY')) return '每天'
+  if (rule?.startsWith('FREQ=WEEKLY')) return '每周'
+  if (rule?.startsWith('FREQ=MONTHLY')) return '每月'
+  return '不重复'
+}
+
+function taskMoment(value?: string | null) {
+  if (!value) return '待安排'
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Europe/Berlin',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value))
+}
+
+function taskScheduleLabel(task: Task) {
+  if (task.startAt) return taskMoment(task.startAt)
+  if (task.start) return `今天 ${task.start}`
+  return '待安排'
+}
+
 function ProgressBar({ value, color = '#496d5b' }: { value: number; color?: string }) {
   return (
     <div className="progress-track" aria-label={`进度 ${value}%`}>
@@ -187,34 +231,59 @@ function ModalShell({ title, eyebrow, onClose, children }: { title: string; eyeb
   )
 }
 
-function TaskEditor({ projects, categories, defaultReminderMinutes, onClose, onSave }: {
+function TaskEditor({ task, schedule = false, projects, categories, defaultReminderMinutes, onClose, onSave }: {
+  task?: Task
+  schedule?: boolean
   projects: Project[]
   categories: Category[]
   defaultReminderMinutes: number
   onClose: () => void
   onSave: (task: TaskDraft) => Promise<void>
 }) {
-  const [title, setTitle] = useState('')
-  const [notes, setNotes] = useState('')
-  const [projectId, setProjectId] = useState('')
-  const [categoryId, setCategoryId] = useState('')
-  const [priority, setPriority] = useState<'low' | 'medium' | 'high'>('medium')
-  const [date, setDate] = useState('')
-  const [startTime, setStartTime] = useState('09:00')
-  const [endTime, setEndTime] = useState('10:00')
-  const [dueAt, setDueAt] = useState('')
-  const [duration, setDuration] = useState(30)
-  const [recurrenceRule, setRecurrenceRule] = useState('')
-  const [reminderMinutes, setReminderMinutes] = useState(defaultReminderMinutes)
-  const [subtasks, setSubtasks] = useState('')
+  const [title, setTitle] = useState(task?.title ?? '')
+  const [notes, setNotes] = useState(task?.notes ?? '')
+  const matchingProject = task && !task.projectId
+    ? projects.find((project) => project.title.includes(task.project) || task.project.includes(project.title))
+    : undefined
+  const matchingCategory = task && !task.categoryId
+    ? categories.find((category) => category.name === task.category)
+    : undefined
+  const [projectId, setProjectId] = useState(task?.projectId ? String(task.projectId) : matchingProject ? String(matchingProject.id) : '')
+  const [categoryId, setCategoryId] = useState(task?.categoryId ? String(task.categoryId) : matchingCategory ? String(matchingCategory.id) : '')
+  const [priority, setPriority] = useState<'low' | 'medium' | 'high'>(task?.priority ?? 'medium')
+  const [date, setDate] = useState(task?.startAt?.slice(0, 10) ?? (task?.start || schedule ? berlinIsoDate() : ''))
+  const [startTime, setStartTime] = useState(task?.startAt?.slice(11, 16) ?? task?.start ?? '09:00')
+  const [endTime, setEndTime] = useState(task?.endAt?.slice(11, 16) ?? task?.end ?? '10:00')
+  const [dueAt, setDueAt] = useState(task?.dueAt?.slice(0, 16) ?? '')
+  const [duration, setDuration] = useState(task?.duration ?? 30)
+  const [recurrenceRule, setRecurrenceRule] = useState(task?.recurrenceRule ?? '')
+  const [reminderMinutes, setReminderMinutes] = useState(task?.reminderMinutes ?? defaultReminderMinutes)
+  const [subtasks, setSubtasks] = useState<Array<TaskSubtaskDraft & { clientId: string }>>(() =>
+    (task?.subtasks ?? []).map((subtask) => ({ ...subtask, clientId: `saved-${subtask.id}` }))
+  )
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  function addSubtask() {
+    setSubtasks((current) => [...current, { title: '', completed: false, clientId: `new-${Date.now()}` }])
+  }
+
+  function updateSubtask(clientId: string, title: string) {
+    setSubtasks((current) => current.map((subtask) => subtask.clientId === clientId ? { ...subtask, title } : subtask))
+  }
+
+  function removeSubtask(clientId: string) {
+    setSubtasks((current) => current.filter((subtask) => subtask.clientId !== clientId))
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (!title.trim()) return
     setSaving(true)
+    setError('')
     try {
       await onSave({
+        id: task?.id,
         title: title.trim(),
         notes: notes.trim(),
         projectId: projectId ? Number(projectId) : null,
@@ -224,18 +293,22 @@ function TaskEditor({ projects, categories, defaultReminderMinutes, onClose, onS
         startAt: date ? `${date}T${startTime}:00` : null,
         endAt: date ? `${date}T${endTime}:00` : null,
         dueAt: dueAt || null,
-        recurrenceRule: recurrenceRule || null,
+        recurrenceRule: date ? recurrenceRule || null : null,
         reminderMinutes: date ? reminderMinutes : null,
-        subtasks: subtasks.split('\n').map((item) => item.trim()).filter(Boolean),
+        subtasks: subtasks
+          .map(({ id, title: subtaskTitle, completed }) => ({ id, title: subtaskTitle.trim(), completed: Boolean(completed) }))
+          .filter((subtask) => subtask.title),
       })
       onClose()
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '任务保存失败，请稍后重试。')
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <ModalShell title="新建任务" eyebrow="TASK" onClose={onClose}>
+    <ModalShell title={schedule ? '安排任务' : task ? '编辑任务' : '新建任务'} eyebrow="TASK" onClose={onClose}>
       <form className="editor-form" onSubmit={submit}>
         <label className="full"><span>任务名称</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="要完成什么？" /></label>
         <label className="full"><span>备注</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="补充背景或完成标准" /></label>
@@ -247,12 +320,95 @@ function TaskEditor({ projects, categories, defaultReminderMinutes, onClose, onS
           <label><span>安排日期</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
           <div className="time-pair"><label><span>开始</span><input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} disabled={!date} /></label><label><span>结束</span><input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} disabled={!date} /></label></div>
           <label><span>截止时间</span><input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /></label>
-          <label><span>重复</span><select value={recurrenceRule} onChange={(event) => setRecurrenceRule(event.target.value)}><option value="">不重复</option><option value="FREQ=DAILY">每天</option><option value="FREQ=WEEKLY">每周</option><option value="FREQ=MONTHLY">每月</option></select></label>
+          <label><span>重复</span><select value={recurrenceRule} onChange={(event) => setRecurrenceRule(event.target.value)} disabled={!date}><option value="">不重复</option><option value="FREQ=DAILY">每天</option><option value="FREQ=WEEKLY">每周</option><option value="FREQ=MONTHLY">每月</option></select></label>
           <label><span>提前提醒（分钟）</span><input type="number" min="0" max="10080" value={reminderMinutes} onChange={(event) => setReminderMinutes(Number(event.target.value))} disabled={!date} /></label>
-          <label className="full"><span>子任务</span><textarea value={subtasks} onChange={(event) => setSubtasks(event.target.value)} placeholder={'每行一个子任务\n例如：整理资料'} /></label>
+          <fieldset className="subtask-editor full">
+            <legend>子任务</legend>
+            <div className="subtask-editor-list">
+              {subtasks.map((subtask, index) => (
+                <div className="subtask-editor-row" key={subtask.clientId}>
+                  <span>{index + 1}</span>
+                  <input value={subtask.title} onChange={(event) => updateSubtask(subtask.clientId, event.target.value)} placeholder="下一小步" />
+                  <button type="button" className="icon-button" onClick={() => removeSubtask(subtask.clientId)} aria-label="删除子任务" title="删除子任务"><Trash2 size={16} /></button>
+                </div>
+              ))}
+            </div>
+            <button type="button" className="text-button subtask-add" onClick={addSubtask}><Plus size={15} /> 添加子任务</button>
+          </fieldset>
         </div>
-        <footer className="modal-actions"><button type="button" className="outline-button" onClick={onClose}>取消</button><button type="submit" className="primary-button" disabled={saving || !title.trim()}>{saving ? '保存中…' : '保存任务'}</button></footer>
+        {error && <p className="form-error">{error}</p>}
+        <footer className="modal-actions"><button type="button" className="outline-button" onClick={onClose}>取消</button><button type="submit" className="primary-button" disabled={saving || !title.trim()}>{saving ? '保存中…' : schedule ? '加入日程' : task ? '保存修改' : '保存任务'}</button></footer>
       </form>
+    </ModalShell>
+  )
+}
+
+function TaskDetail({ task, onClose, onEdit, onSchedule, onDelete, onToggle, onToggleSubtask }: {
+  task: Task
+  onClose: () => void
+  onEdit: () => void
+  onSchedule: () => void
+  onDelete: () => Promise<void>
+  onToggle: () => void
+  onToggleSubtask: (subtask: Subtask) => void
+}) {
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  async function remove() {
+    setDeleting(true)
+    try {
+      await onDelete()
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <ModalShell title={task.title} eyebrow="TASK DETAIL" onClose={onClose}>
+      <div className="task-detail">
+        <div className={`task-detail-status ${task.completed ? 'is-complete' : ''}`}>
+          <TaskCheck task={task} onToggle={onToggle} />
+          <button type="button" onClick={onToggle}><strong>{task.completed ? '已完成' : '标记为完成'}</strong><small>{task.completed ? '再次点击可恢复任务' : '完成后会保留这次记录'}</small></button>
+        </div>
+
+        <div className="task-detail-meta">
+          <div><CalendarClock size={17} /><span>时间</span><strong>{taskScheduleLabel(task)}</strong></div>
+          <div><Clock3 size={17} /><span>预计</span><strong>{task.duration} 分钟</strong></div>
+          <div><FolderKanban size={17} /><span>项目</span><strong>{task.project}</strong></div>
+          <div><Repeat2 size={17} /><span>重复</span><strong>{recurrenceLabel(task.recurrenceRule)}</strong></div>
+        </div>
+
+        {task.notes && <section className="task-detail-section"><h3>备注</h3><p>{task.notes}</p></section>}
+
+        <section className="task-detail-section">
+          <div className="task-detail-heading"><h3>子任务</h3><span>{(task.subtasks ?? []).filter((subtask) => subtask.completed).length}/{task.subtasks?.length ?? 0}</span></div>
+          {(task.subtasks ?? []).length > 0 ? (
+            <div className="subtask-list">
+              {(task.subtasks ?? []).map((subtask) => (
+                <button type="button" className={subtask.completed ? 'is-complete' : ''} onClick={() => onToggleSubtask(subtask)} key={subtask.id}>
+                  <span className="subtask-check">{subtask.completed && <Check size={13} />}</span>
+                  <span>{subtask.title}</span>
+                </button>
+              ))}
+            </div>
+          ) : <p className="empty-copy">这个任务还没有拆分步骤。</p>}
+        </section>
+
+        {confirmDelete && (
+          <div className="delete-confirm" role="alert">
+            <div><strong>删除这个任务？</strong><span>任务和子任务都会被永久删除。</span></div>
+            <button type="button" className="outline-button" onClick={() => setConfirmDelete(false)}>取消</button>
+            <button type="button" className="danger-button" onClick={remove} disabled={deleting}>{deleting ? '删除中…' : '确认删除'}</button>
+          </div>
+        )}
+
+        <footer className="task-detail-actions">
+          <button type="button" className="icon-button task-delete-button" onClick={() => setConfirmDelete(true)} aria-label="删除任务" title="删除任务"><Trash2 size={17} /></button>
+          {task.unscheduled && <button type="button" className="outline-button" onClick={onSchedule}><CalendarClock size={16} /> 安排时间</button>}
+          <button type="button" className="primary-button" onClick={onEdit}><Pencil size={16} /> 编辑任务</button>
+        </footer>
+      </div>
     </ModalShell>
   )
 }
@@ -489,7 +645,7 @@ function TaskCheck({ task, onToggle }: { task: Task; onToggle: (id: number) => v
   )
 }
 
-function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask, toggleTask, toggleHabit }: {
+function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask, toggleTask, toggleHabit, onOpenTask, onScheduleTask, onNavigate }: {
   tasks: Task[]
   habits: Habit[]
   projects: Project[]
@@ -498,6 +654,9 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
   addTask: () => void
   toggleTask: (id: number) => void
   toggleHabit: (id: number, day: number) => void
+  onOpenTask: (id: number) => void
+  onScheduleTask: (id: number) => void
+  onNavigate: (page: PageKey) => void
 }) {
   const scheduled = tasks.filter((task) => !task.unscheduled)
   const completed = scheduled.filter((task) => task.completed).length
@@ -533,7 +692,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
           <section className="content-section timeline-section">
             <div className="section-title-row">
               <div><h2>今日时间轴</h2><span>{scheduled.length} 项安排</span></div>
-              <button className="text-button">调整日程 <ChevronRight size={15} /></button>
+              <button className="text-button" onClick={() => onNavigate('calendar')}>调整日程 <ChevronRight size={15} /></button>
             </div>
             <div className="timeline">
               {scheduled.map((task) => (
@@ -542,12 +701,12 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
                   <span className="timeline-dot" style={{ borderColor: task.color, backgroundColor: task.completed ? task.color : '#fff' }} />
                   <div className="timeline-task" style={{ '--task-color': task.color } as React.CSSProperties}>
                     <TaskCheck task={task} onToggle={toggleTask} />
-                    <div className="task-copy">
+                    <button type="button" className="task-copy task-open-button" onClick={() => onOpenTask(task.id)}>
                       <strong>{task.title}</strong>
                       <span>{task.project} · {task.duration} 分钟</span>
-                    </div>
+                    </button>
                     <span className={`priority priority-${task.priority}`}>{priorityLabels[task.priority]}</span>
-                    <button className="row-action" aria-label="更多操作"><MoreHorizontal size={18} /></button>
+                    <button className="row-action" onClick={() => onOpenTask(task.id)} aria-label="查看任务" title="查看任务"><MoreHorizontal size={18} /></button>
                   </div>
                 </article>
               ))}
@@ -557,7 +716,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
           <section className="content-section">
             <div className="section-title-row">
               <div><h2>今日习惯</h2><span>{habits.filter((habit) => habit.checked[1]).length}/{habits.length} 已完成</span></div>
-              <button className="text-button">全部习惯 <ChevronRight size={15} /></button>
+              <button className="text-button" onClick={() => onNavigate('habits')}>全部习惯 <ChevronRight size={15} /></button>
             </div>
             <div className="habit-card-grid">
               {habits.map((habit) => (
@@ -579,7 +738,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
           <section className="content-section">
             <div className="section-title-row">
               <div><h2>项目推进</h2><span>按最小下一步行动</span></div>
-              <button className="text-button">查看项目 <ChevronRight size={15} /></button>
+              <button className="text-button" onClick={() => onNavigate('projects')}>查看项目 <ChevronRight size={15} /></button>
             </div>
             <div className="project-snapshot-grid">
               {projects.slice(0, 2).map((project) => (
@@ -600,13 +759,13 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
 
         <aside className="today-aside">
           <section className="aside-section">
-            <div className="section-title-row"><h2>接下来</h2><button className="row-action"><MoreHorizontal size={18} /></button></div>
+            <div className="section-title-row"><h2>接下来</h2>{nextTask && <button className="row-action" onClick={() => onOpenTask(nextTask.id)} aria-label="查看下一项" title="查看下一项"><MoreHorizontal size={18} /></button>}</div>
             {nextTask ? <>
-              <div className="next-task">
+              <button type="button" className="next-task task-open-button" onClick={() => onOpenTask(nextTask.id)}>
                 <span className="next-time">{nextTask.start ?? '待定'}</span>
                 <div><strong>{nextTask.title}</strong><span>{nextTask.project} · {nextTask.duration} 分钟</span></div>
-              </div>
-              <button className="outline-button"><AlarmClock size={16} /> 提前 10 分钟提醒</button>
+              </button>
+              <button className="outline-button" onClick={() => onOpenTask(nextTask.id)}><AlarmClock size={16} /> 查看提醒设置</button>
             </> : <p className="empty-copy">今天的安排已经完成。</p>}
           </section>
           <section className="aside-section inbox-preview">
@@ -614,8 +773,8 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
             {tasks.filter((task) => task.unscheduled).map((task) => (
               <div className="aside-task" key={task.id}>
                 <span style={{ backgroundColor: task.color }} />
-                <div><strong>{task.title}</strong><small>{task.due}</small></div>
-                <button className="row-action"><CalendarDays size={16} /></button>
+                <button type="button" className="aside-task-copy task-open-button" onClick={() => onOpenTask(task.id)}><strong>{task.title}</strong><small>{task.due}</small></button>
+                <button className="row-action" onClick={() => onScheduleTask(task.id)} aria-label="安排时间" title="安排时间"><CalendarDays size={16} /></button>
               </div>
             ))}
           </section>
@@ -629,13 +788,15 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
   )
 }
 
-function InboxPage({ tasks, quickEntry, setQuickEntry, addTask, toggleTask, onNewTask }: {
+function InboxPage({ tasks, quickEntry, setQuickEntry, addTask, toggleTask, onNewTask, onOpenTask, onScheduleTask }: {
   tasks: Task[]
   quickEntry: string
   setQuickEntry: (value: string) => void
   addTask: () => void
   toggleTask: (id: number) => void
   onNewTask?: () => void
+  onOpenTask: (id: number) => void
+  onScheduleTask: (id: number) => void
 }) {
   const [filter, setFilter] = useState<'all' | 'open' | 'done'>('all')
   const visibleTasks = tasks.filter((task) => filter === 'all' || (filter === 'done' ? task.completed : !task.completed))
@@ -654,20 +815,20 @@ function InboxPage({ tasks, quickEntry, setQuickEntry, addTask, toggleTask, onNe
             <button className={filter === 'open' ? 'active' : ''} onClick={() => setFilter('open')}>未完成</button>
             <button className={filter === 'done' ? 'active' : ''} onClick={() => setFilter('done')}>已完成</button>
           </div>
-          <button className="outline-button compact"><ListFilter size={16} /> 筛选</button>
+          <span className="list-count">{visibleTasks.length} 项</span>
         </div>
         <div className="task-list">
           {visibleTasks.map((task) => (
             <article className={`task-list-row ${task.completed ? 'is-complete' : ''}`} key={task.id}>
               <TaskCheck task={task} onToggle={toggleTask} />
               <span className="task-color" style={{ backgroundColor: task.color }} />
-              <div className="task-list-copy">
+              <button type="button" className="task-list-copy task-open-button" onClick={() => onOpenTask(task.id)}>
                 <strong>{task.title}</strong>
                 <span>{task.project} · {task.duration} 分钟</span>
-              </div>
+              </button>
               <span className={`priority priority-${task.priority}`}>{priorityLabels[task.priority]}优先级</span>
               <span className="task-due"><CalendarDays size={15} />{task.start ? `今天 ${task.start}` : task.due}</span>
-              <button className="row-action"><MoreHorizontal size={18} /></button>
+              <button className="row-action" onClick={() => task.unscheduled ? onScheduleTask(task.id) : onOpenTask(task.id)} aria-label={task.unscheduled ? '安排时间' : '查看任务'} title={task.unscheduled ? '安排时间' : '查看任务'}>{task.unscheduled ? <CalendarClock size={17} /> : <MoreHorizontal size={18} />}</button>
             </article>
           ))}
         </div>
@@ -676,7 +837,7 @@ function InboxPage({ tasks, quickEntry, setQuickEntry, addTask, toggleTask, onNe
   )
 }
 
-function CalendarPage({ tasks, onNewTask }: { tasks: Task[]; onNewTask: () => void }) {
+function CalendarPage({ tasks, onNewTask, onOpenTask }: { tasks: Task[]; onNewTask: () => void; onOpenTask: (id: number) => void }) {
   const [view, setView] = useState<'day' | 'week' | 'month'>('week')
   const dates = currentWeekDates()
   const hours = ['09:00', '11:00', '13:00', '15:00', '17:00', '19:00']
@@ -718,7 +879,7 @@ function CalendarPage({ tasks, onNewTask }: { tasks: Task[]; onNewTask: () => vo
                 <div className={`calendar-cell ${dayIndex === 1 ? 'today-column' : ''}`} key={`${hour}-${day}`}>
                   {dayIndex === 1 && hourIndex < tasks.filter((task) => !task.unscheduled).length && hourIndex % 2 === 0 && (() => {
                     const task = tasks.filter((item) => !item.unscheduled)[Math.floor(hourIndex / 2)]
-                    return <article className="calendar-event" style={{ '--event-color': task.color } as React.CSSProperties}><strong>{task.title}</strong><span>{task.start}–{task.end}</span></article>
+                    return <button type="button" className="calendar-event" onClick={() => onOpenTask(task.id)} style={{ '--event-color': task.color } as React.CSSProperties}><strong>{task.title}</strong><span>{task.start}–{task.end}</span></button>
                   })()}
                   {dayIndex === 3 && hourIndex === 2 && <article className="calendar-event muted"><strong>项目复盘</strong><span>13:30–14:00</span></article>}
                 </div>
@@ -1066,12 +1227,17 @@ export default function App() {
   ])
   const [settings, setSettings] = useState(defaultSettings)
   const [review, setReview] = useState(defaultReview)
-  const [editor, setEditor] = useState<'task' | 'project' | 'habit' | null>(null)
+  const [editor, setEditor] = useState<EditorState>(null)
+  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [quickEntry, setQuickEntry] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [toast, setToast] = useState('')
 
   const inboxCount = useMemo(() => tasks.filter((task) => !task.completed && task.unscheduled).length, [tasks])
+  const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId), [selectedTaskId, tasks])
+  const editorTask = editor?.type === 'task' && editor.taskId
+    ? tasks.find((task) => task.id === editor.taskId)
+    : undefined
 
   useEffect(() => {
     const syncRoute = () => {
@@ -1166,11 +1332,36 @@ export default function App() {
     if (completed) showToast('完成一件，今天向前了一点')
     if (!demoMode) {
       try {
-        const updated = await api.updateTask({ id, completed })
-        setTasks((current) => current.map((item) => item.id === id ? updated : item))
+        const result = await api.updateTask({ id, completed })
+        setTasks((current) => {
+          const updated = current.map((item) => item.id === id ? result.task : item)
+          return result.nextTask && !updated.some((item) => item.id === result.nextTask?.id)
+            ? [...updated, result.nextTask]
+            : updated
+        })
+        if (result.nextTask) showToast('已完成，下一次重复任务也安排好了')
       } catch (error) {
         setTasks((current) => current.map((item) => item.id === id ? task : item))
         showToast(error instanceof Error ? error.message : '任务状态保存失败')
+      }
+    }
+  }
+
+  async function toggleSubtask(taskId: number, subtask: Subtask) {
+    const task = tasks.find((item) => item.id === taskId)
+    if (!task) return
+    const completed = !subtask.completed
+    setTasks((current) => current.map((item) => item.id === taskId ? {
+      ...item,
+      subtasks: (item.subtasks ?? []).map((entry) => entry.id === subtask.id ? { ...entry, completed } : entry),
+    } : item))
+    if (!demoMode) {
+      try {
+        const updated = await api.updateSubtask(taskId, subtask.id, completed)
+        setTasks((current) => current.map((item) => item.id === taskId ? updated : item))
+      } catch (error) {
+        setTasks((current) => current.map((item) => item.id === taskId ? task : item))
+        showToast(error instanceof Error ? error.message : '子任务状态保存失败')
       }
     }
   }
@@ -1262,6 +1453,12 @@ export default function App() {
 
   async function saveTask(draft: TaskDraft) {
     if (!demoMode) {
+      if (draft.id) {
+        const result = await api.updateTask(draft as Partial<Task> & { id: number })
+        setTasks((current) => current.map((task) => task.id === draft.id ? result.task : task))
+        showToast('任务已更新')
+        return
+      }
       const created = await api.createTask(draft)
       setTasks((current) => [created, ...current])
       showToast('任务已创建')
@@ -1270,8 +1467,10 @@ export default function App() {
 
     const category = categories.find((item) => item.id === draft.categoryId)
     const project = projectItems.find((item) => item.id === draft.projectId)
-    const created: Task = {
-      id: Date.now(),
+    const existing = draft.id ? tasks.find((task) => task.id === draft.id) : undefined
+    const saved: Task = {
+      ...existing,
+      id: existing?.id ?? Date.now(),
       title: draft.title,
       notes: draft.notes,
       project: project?.title ?? '未分类',
@@ -1287,13 +1486,46 @@ export default function App() {
       dueAt: draft.dueAt,
       due: draft.dueAt ? draft.dueAt.replace('T', ' ').slice(0, 16) : '待安排',
       duration: draft.duration ?? 30,
-      completed: false,
+      completed: existing?.completed ?? false,
       unscheduled: !draft.startAt,
       recurrenceRule: draft.recurrenceRule,
       reminderMinutes: draft.reminderMinutes,
+      subtasks: (draft.subtasks ?? []).map((subtask, index) => ({
+        id: subtask.id ?? Date.now() + index,
+        title: subtask.title,
+        completed: Boolean(subtask.completed),
+        position: index,
+      })),
     }
-    setTasks((current) => [created, ...current])
-    showToast('任务已创建')
+    setTasks((current) => existing
+      ? current.map((task) => task.id === existing.id ? saved : task)
+      : [saved, ...current])
+    showToast(existing ? '任务已更新' : '任务已创建')
+  }
+
+  async function deleteTask(id: number) {
+    const task = tasks.find((item) => item.id === id)
+    if (!task) return
+    if (!demoMode) {
+      try {
+        await api.deleteTask(id)
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : '任务删除失败')
+        throw error
+      }
+    }
+    setTasks((current) => current.filter((item) => item.id !== id))
+    setSelectedTaskId(null)
+    showToast('任务已删除')
+  }
+
+  function openTask(id: number) {
+    setSelectedTaskId(id)
+  }
+
+  function editTask(id: number, schedule = false) {
+    setSelectedTaskId(null)
+    setEditor({ type: 'task', taskId: id, schedule })
   }
 
   async function saveProject(draft: Partial<Project> & { title: string }) {
@@ -1375,18 +1607,19 @@ export default function App() {
       </div>
       <div className="app-main">
         <Topbar page={page} onMenu={() => setMenuOpen(true)} />
-        {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} />}
-        {page === 'inbox' && <InboxPage tasks={tasks} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} onNewTask={() => setEditor('task')} />}
-        {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor('task')} />}
-        {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor('project')} />}
-        {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor('habit')} />}
+        {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} onNavigate={navigate} />}
+        {page === 'inbox' && <InboxPage tasks={tasks} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} onNewTask={() => setEditor({ type: 'task' })} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} />}
+        {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor({ type: 'task', schedule: true })} onOpenTask={openTask} />}
+        {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
+        {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} />}
         {page === 'review' && <ReviewPage summary={review} />}
         {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
-      {editor === 'task' && <TaskEditor projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}
-      {editor === 'project' && <ProjectEditor onClose={() => setEditor(null)} onSave={saveProject} />}
-      {editor === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}
+      {selectedTask && <TaskDetail task={selectedTask} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} />}
+      {editor?.type === 'task' && <TaskEditor task={editorTask} schedule={editor.schedule} projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}
+      {editor?.type === 'project' && <ProjectEditor onClose={() => setEditor(null)} onSave={saveProject} />}
+      {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}
       {toast && <div className="toast"><CheckCircle2 size={17} />{toast}</div>}
     </div>
   )

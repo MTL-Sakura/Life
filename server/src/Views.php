@@ -9,7 +9,7 @@ use DateTimeZone;
 
 final class Views
 {
-    public static function task(array $row, string $timezone): array
+    public static function task(array $row, string $timezone, array $subtasks = []): array
     {
         $start = self::localDate($row['start_at'] ?? null, $timezone);
         $end = self::localDate($row['end_at'] ?? null, $timezone);
@@ -37,6 +37,12 @@ final class Views
             'status' => $row['status'],
             'recurrenceRule' => $row['recurrence_rule'] ?? null,
             'reminderMinutes' => isset($row['reminder_minutes']) ? (int) $row['reminder_minutes'] : null,
+            'subtasks' => array_map(static fn (array $subtask): array => [
+                'id' => (int) $subtask['id'],
+                'title' => $subtask['title'],
+                'completed' => (bool) $subtask['completed'],
+                'position' => (int) $subtask['position'],
+            ], $subtasks),
         ];
     }
 

@@ -716,6 +716,19 @@ p {
   flex-direction: column;
 }
 
+.task-open-button {
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-open-button:hover strong {
+  color: var(--green);
+}
+
 .task-copy strong,
 .task-list-copy strong {
   overflow: hidden;
@@ -892,6 +905,7 @@ p {
 }
 
 .next-task {
+  width: 100%;
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr);
   gap: 10px;
@@ -947,20 +961,20 @@ p {
   border-radius: 50%;
 }
 
-.aside-task > div {
+.aside-task-copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
 }
 
-.aside-task strong {
+.aside-task-copy strong {
   overflow: hidden;
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.aside-task small {
+.aside-task-copy small {
   margin-top: 3px;
   color: var(--subtle);
   font-size: 8px;
@@ -1056,6 +1070,15 @@ p {
 
 .task-list-row.is-complete .task-list-copy strong {
   text-decoration: line-through;
+}
+
+.task-list-copy {
+  width: 100%;
+}
+
+.list-count {
+  color: var(--subtle);
+  font-size: 10px;
 }
 
 .task-color {
@@ -1165,10 +1188,13 @@ p {
   inset: 7px 5px auto;
   min-height: 58px;
   padding: 8px;
+  border: 0;
   border-left: 3px solid var(--event-color, var(--green));
   border-radius: 5px;
   color: #3f5147;
   background: #e7eee9;
+  text-align: left;
+  cursor: pointer;
 }
 
 .calendar-event.muted {
@@ -2018,6 +2044,7 @@ p {
 
 .modal-header h2 {
   margin-top: 4px;
+  overflow-wrap: anywhere;
   font-family: Georgia, "Songti SC", serif;
   font-size: 21px;
 }
@@ -2078,6 +2105,239 @@ p {
 
 .editor-grid .full {
   grid-column: 1 / -1;
+}
+
+.subtask-editor {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.subtask-editor legend {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.subtask-editor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.subtask-editor-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 7px;
+}
+
+.subtask-editor-row > span {
+  color: var(--subtle);
+  font-size: 9px;
+  text-align: center;
+}
+
+.subtask-editor-row .icon-button {
+  width: 34px;
+  height: 34px;
+  color: #9a4938;
+}
+
+.subtask-add {
+  margin-top: 7px;
+}
+
+.task-detail {
+  padding: 22px;
+}
+
+.task-detail-status {
+  min-height: 62px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.task-detail-status.is-complete {
+  background: var(--green-light);
+}
+
+.task-detail-status > button:last-child {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  border: 0;
+  padding: 0;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+}
+
+.task-detail-status strong {
+  font-size: 11px;
+}
+
+.task-detail-status small {
+  margin-top: 4px;
+  color: var(--subtle);
+  font-size: 9px;
+}
+
+.task-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--line);
+}
+
+.task-detail-meta > div {
+  min-width: 0;
+  min-height: 82px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-content: center;
+  gap: 5px 7px;
+  padding: 12px;
+  background: rgba(251, 250, 247, 0.96);
+}
+
+.task-detail-meta svg {
+  grid-row: 1 / 3;
+  color: var(--green);
+}
+
+.task-detail-meta span {
+  color: var(--subtle);
+  font-size: 8px;
+}
+
+.task-detail-meta strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-detail-section {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.task-detail-section h3 {
+  font-size: 11px;
+}
+
+.task-detail-section > p:not(.empty-copy) {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.task-detail-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.task-detail-heading span {
+  color: var(--subtle);
+  font-size: 9px;
+}
+
+.subtask-list {
+  margin-top: 10px;
+}
+
+.subtask-list button {
+  width: 100%;
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  padding: 6px 3px;
+  color: var(--ink);
+  background: transparent;
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.subtask-list button.is-complete {
+  color: var(--subtle);
+  text-decoration: line-through;
+}
+
+.subtask-check {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: #fff;
+  background: #fff;
+}
+
+.subtask-list button.is-complete .subtask-check {
+  border-color: var(--green);
+  background: var(--green);
+}
+
+.delete-confirm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 9px;
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid #dec0b9;
+  border-radius: 7px;
+  background: #fff8f6;
+}
+
+.delete-confirm > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.delete-confirm strong {
+  color: #884535;
+  font-size: 10px;
+}
+
+.delete-confirm span {
+  margin-top: 3px;
+  color: #9b7167;
+  font-size: 8px;
+}
+
+.task-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 18px;
+}
+
+.task-delete-button {
+  margin-right: auto;
+  color: #9a4938;
 }
 
 .time-pair {
@@ -2732,6 +2992,26 @@ p {
   }
 
   .modal-actions {
+    position: sticky;
+    bottom: -22px;
+    margin: 0 -22px -22px;
+    padding: 14px 22px calc(14px + env(safe-area-inset-bottom));
+    background: var(--paper);
+  }
+
+  .task-detail-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .delete-confirm {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .delete-confirm > div {
+    grid-column: 1 / -1;
+  }
+
+  .task-detail-actions {
     position: sticky;
     bottom: -22px;
     margin: 0 -22px -22px;

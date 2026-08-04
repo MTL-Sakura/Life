@@ -9,6 +9,13 @@ export type PageKey =
 
 export type Priority = 'high' | 'medium' | 'low'
 
+export type Subtask = {
+  id: number
+  title: string
+  completed: boolean
+  position: number
+}
+
 export type Task = {
   id: number
   title: string
@@ -31,6 +38,7 @@ export type Task = {
   dueAt?: string | null
   recurrenceRule?: string | null
   reminderMinutes?: number | null
+  subtasks?: Subtask[]
 }
 
 export type Habit = {
