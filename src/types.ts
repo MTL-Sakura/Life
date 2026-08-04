@@ -38,6 +38,7 @@ export type Task = {
   dueAt?: string | null
   recurrenceRule?: string | null
   reminderMinutes?: number | null
+  completedAt?: string | null
   subtasks?: Subtask[]
 }
 

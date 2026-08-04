@@ -667,13 +667,24 @@ function habitDetail(array $habit): string
 function reviewData(PDO $db, int $userId, string $weekStart, string $weekEnd): array
 {
     $statement = $db->prepare(
-        'SELECT COUNT(*) AS total,
-                SUM(status = "completed") AS completed,
-                COALESCE(SUM(CASE WHEN status = "completed" THEN estimated_minutes ELSE 0 END), 0) AS completed_minutes,
+        'SELECT COUNT(CASE WHEN
+                    (start_at >= ? AND start_at < ?)
+                    OR (due_at >= ? AND due_at < ?)
+                    OR (completed_at >= ? AND completed_at < ?)
+                THEN 1 END) AS total,
+                SUM(status = "completed" AND completed_at >= ? AND completed_at < ?) AS completed,
+                COALESCE(SUM(CASE WHEN status = "completed" AND completed_at >= ? AND completed_at < ? THEN estimated_minutes ELSE 0 END), 0) AS completed_minutes,
                 SUM(status != "completed" AND due_at < UTC_TIMESTAMP()) AS overdue
-         FROM tasks WHERE user_id = ? AND created_at < ? AND (due_at >= ? OR start_at >= ? OR completed_at >= ?)'
+         FROM tasks WHERE user_id = ? AND status != "cancelled"'
     );
-    $statement->execute([$userId, $weekEnd, $weekStart, $weekStart, $weekStart]);
+    $statement->execute([
+        $weekStart, $weekEnd,
+        $weekStart, $weekEnd,
+        $weekStart, $weekEnd,
+        $weekStart, $weekEnd,
+        $weekStart, $weekEnd,
+        $userId,
+    ]);
     $row = $statement->fetch() ?: [];
     $total = (int) ($row['total'] ?? 0);
     $completed = (int) ($row['completed'] ?? 0);

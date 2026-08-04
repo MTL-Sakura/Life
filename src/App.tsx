@@ -10,8 +10,6 @@ import {
   CalendarRange,
   Check,
   CheckCircle2,
-  ChevronDown,
-  ChevronLeft,
   ChevronRight,
   Circle,
   Clock3,
@@ -31,7 +29,6 @@ import {
   Plus,
   Pencil,
   Repeat2,
-  RotateCcw,
   Search,
   Settings,
   ShieldCheck,
@@ -82,11 +79,11 @@ const defaultSettings: UserSettings = {
 }
 
 const defaultReview: ReviewSummary = {
-  total: 35,
-  completed: 24,
-  completionRate: 68,
-  completedMinutes: 1235,
-  overdue: 3,
+  total: 0,
+  completed: 0,
+  completionRate: 0,
+  completedMinutes: 0,
+  overdue: 0,
 }
 
 const palette = ['#496d5b', '#b96552', '#58748f', '#a1843e', '#7a6b87']
@@ -142,24 +139,15 @@ function berlinDate() {
 }
 
 function currentWeekDates() {
-  const now = new Date()
-  const mondayOffset = (now.getDay() + 6) % 7
-  const monday = new Date(now)
-  monday.setDate(now.getDate() - mondayOffset)
-  return Array.from({ length: 7 }, (_, index) => {
-    const date = new Date(monday)
-    date.setDate(monday.getDate() + index)
-    return date.getDate()
-  })
+  return Array.from({ length: 7 }, (_, index) => Number(currentWeekDateIso(index).slice(8, 10)))
 }
 
 function currentWeekDateIso(dayIndex: number) {
-  const now = new Date()
-  const mondayOffset = (now.getDay() + 6) % 7
-  const date = new Date(now)
-  date.setHours(12, 0, 0, 0)
-  date.setDate(now.getDate() - mondayOffset + dayIndex)
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  const [year, month, day] = berlinIsoDate().split('-').map(Number)
+  const today = new Date(Date.UTC(year, month - 1, day, 12))
+  const mondayOffset = (today.getUTCDay() + 6) % 7
+  today.setUTCDate(today.getUTCDate() - mondayOffset + dayIndex)
+  return `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-${String(today.getUTCDate()).padStart(2, '0')}`
 }
 
 function berlinIsoDate() {
@@ -169,6 +157,36 @@ function berlinIsoDate() {
     month: '2-digit',
     day: '2-digit',
   }).format(new Date())
+}
+
+function currentMonthCells() {
+  const [year, month, today] = berlinIsoDate().split('-').map(Number)
+  const leadingDays = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  return Array.from({ length: 42 }, (_, index) => {
+    const day = index - leadingDays + 1
+    if (day < 1 || day > daysInMonth) return { key: `blank-${index}`, day: null, date: null, active: false }
+    const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    return { key: date, day, date, active: day === today }
+  })
+}
+
+function taskCalendarDate(task: Task) {
+  if (task.startAt) return task.startAt.slice(0, 10)
+  if (task.start && !task.unscheduled) return berlinIsoDate()
+  return null
+}
+
+function taskCalendarTime(task: Task) {
+  return task.startAt?.slice(11, 16) ?? task.start ?? null
+}
+
+function taskReviewDate(task: Task) {
+  return task.startAt?.slice(0, 10)
+    ?? task.dueAt?.slice(0, 10)
+    ?? task.completedAt?.slice(0, 10)
+    ?? (task.start && !task.unscheduled ? berlinIsoDate() : null)
+    ?? null
 }
 
 function recurrenceLabel(rule?: string | null) {
@@ -663,6 +681,13 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
   const progress = Math.round((completed / Math.max(scheduled.length, 1)) * 100)
   const focusMinutes = scheduled.reduce((sum, task) => sum + task.duration, 0)
   const nextTask = scheduled.find((task) => !task.completed)
+  const todayIndex = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)).indexOf(berlinIsoDate())
+  const rhythmLabel = scheduled.length === 0 ? '暂无安排' : progress >= 75 ? '很顺畅' : progress >= 30 ? '推进中' : '刚开始'
+  const rhythmNote = scheduled.length === 0
+    ? { title: '今天还是空白页', copy: '先记下一件真正重要的小事就够了。' }
+    : nextTask
+      ? { title: '按照自己的节奏来', copy: `下一项是“${nextTask.title}”，完成后记得留一点缓冲。` }
+      : { title: '今天的安排完成了', copy: '剩下的时间可以安心留给休息。' }
 
   return (
     <div className="page-content today-page">
@@ -686,7 +711,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
           <section className="metric-strip" aria-label="今日概览">
             <div><CheckCircle2 size={19} /><span>任务</span><strong>{completed}/{scheduled.length}</strong></div>
             <div><Clock3 size={19} /><span>计划专注</span><strong>{Math.floor(focusMinutes / 60)}h {focusMinutes % 60}m</strong></div>
-            <div><TrendingUp size={19} /><span>本周节奏</span><strong>稳定</strong></div>
+            <div><TrendingUp size={19} /><span>今日节奏</span><strong>{rhythmLabel}</strong></div>
           </section>
 
           <section className="content-section timeline-section">
@@ -715,7 +740,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
 
           <section className="content-section">
             <div className="section-title-row">
-              <div><h2>今日习惯</h2><span>{habits.filter((habit) => habit.checked[1]).length}/{habits.length} 已完成</span></div>
+              <div><h2>今日习惯</h2><span>{habits.filter((habit) => habit.checked[todayIndex]).length}/{habits.length} 已完成</span></div>
               <button className="text-button" onClick={() => onNavigate('habits')}>全部习惯 <ChevronRight size={15} /></button>
             </div>
             <div className="habit-card-grid">
@@ -723,13 +748,13 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
                 <button
                   key={habit.id}
                   type="button"
-                  className={`habit-quick-card ${habit.checked[1] ? 'checked' : ''}`}
-                  onClick={() => toggleHabit(habit.id, 1)}
+                  className={`habit-quick-card ${habit.checked[todayIndex] ? 'checked' : ''}`}
+                  onClick={() => toggleHabit(habit.id, todayIndex)}
                   style={{ '--habit-color': habit.color } as React.CSSProperties}
                 >
                   <span className="habit-symbol">{habit.name.includes('训练') ? <Dumbbell size={18} /> : habit.name.includes('睡') ? <Moon size={18} /> : habit.name.includes('阅读') ? <BookOpen size={18} /> : <Sun size={18} />}</span>
                   <span><strong>{habit.name}</strong><small>{habit.detail}</small></span>
-                  <span className="habit-checkmark">{habit.checked[1] ? <Check size={15} /> : <Circle size={15} />}</span>
+                  <span className="habit-checkmark">{habit.checked[todayIndex] ? <Check size={15} /> : <Circle size={15} />}</span>
                 </button>
               ))}
             </div>
@@ -753,6 +778,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
                   <p>下一步：{project.currentStage}</p>
                 </article>
               ))}
+              {projects.length === 0 && <p className="empty-copy">还没有项目，先从一个明确目标开始。</p>}
             </div>
           </section>
         </div>
@@ -780,7 +806,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
           </section>
           <section className="aside-section gentle-note">
             <Sparkles size={18} />
-            <div><strong>今日节奏不错</strong><p>完成下一项后，给自己留十分钟缓冲。</p></div>
+            <div><strong>{rhythmNote.title}</strong><p>{rhythmNote.copy}</p></div>
           </section>
         </aside>
       </div>
@@ -841,12 +867,16 @@ function CalendarPage({ tasks, onNewTask, onOpenTask }: { tasks: Task[]; onNewTa
   const [view, setView] = useState<'day' | 'week' | 'month'>('week')
   const dates = currentWeekDates()
   const hours = ['09:00', '11:00', '13:00', '15:00', '17:00', '19:00']
+  const todayIndex = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)).indexOf(berlinIsoDate())
+  const scheduledTasks = tasks.filter((task) => !task.unscheduled && taskCalendarDate(task))
+  const scheduledDates = new Set(scheduledTasks.map(taskCalendarDate).filter(Boolean))
+  const monthCells = currentMonthCells()
 
   return (
     <div className="page-content">
       <section className="page-heading">
         <div><p className="eyebrow">CALENDAR</p><h1>日历</h1><p>任务、项目节点和习惯都在同一条时间线上。</p></div>
-        <div className="heading-actions"><button className="outline-button compact"><ChevronLeft size={16} /></button><button className="date-button">本周</button><button className="outline-button compact"><ChevronRight size={16} /></button></div>
+        <span className="date-button calendar-period">本周</span>
       </section>
       <div className="calendar-toolbar">
         <div className="segmented-control">
@@ -860,28 +890,36 @@ function CalendarPage({ tasks, onNewTask, onOpenTask }: { tasks: Task[]; onNewTa
       {view === 'month' ? (
         <section className="month-grid">
           {weekDays.map((day) => <div className="month-weekday" key={day}>周{day}</div>)}
-          {Array.from({ length: 35 }, (_, index) => {
-            const day = index - 2
-            const active = day === new Date().getDate()
-            return <div className={`month-day ${active ? 'active' : ''}`} key={index}>{day > 0 && day <= 31 ? <><span>{day}</span>{[4, 7, 12, 18, 25].includes(day) && <i />}</> : null}</div>
-          })}
+          {monthCells.map((cell) => (
+            <div className={`month-day ${cell.active ? 'active' : ''}`} key={cell.key}>
+              {cell.day && <><span>{cell.day}</span>{cell.date && scheduledDates.has(cell.date) && <i />}</>}
+            </div>
+          ))}
         </section>
       ) : (
         <section className={`week-calendar ${view === 'day' ? 'day-view' : ''}`}>
           <div className="week-head-spacer" />
           {weekDays.map((day, index) => (
-            <div className={`week-day-head ${index === 1 ? 'today' : ''}`} key={day}><span>周{day}</span><strong>{dates[index]}</strong></div>
+            <div className={`week-day-head ${index === todayIndex ? 'today' : ''}`} key={day}><span>周{day}</span><strong>{dates[index]}</strong></div>
           ))}
           {hours.map((hour, hourIndex) => (
             <div className="calendar-row" key={hour}>
               <span className="hour-label">{hour}</span>
               {weekDays.map((day, dayIndex) => (
-                <div className={`calendar-cell ${dayIndex === 1 ? 'today-column' : ''}`} key={`${hour}-${day}`}>
-                  {dayIndex === 1 && hourIndex < tasks.filter((task) => !task.unscheduled).length && hourIndex % 2 === 0 && (() => {
-                    const task = tasks.filter((item) => !item.unscheduled)[Math.floor(hourIndex / 2)]
-                    return <button type="button" className="calendar-event" onClick={() => onOpenTask(task.id)} style={{ '--event-color': task.color } as React.CSSProperties}><strong>{task.title}</strong><span>{task.start}–{task.end}</span></button>
+                <div className={`calendar-cell ${dayIndex === todayIndex ? 'today-column' : ''}`} key={`${hour}-${day}`}>
+                  {(() => {
+                    const startHour = Number(hour.slice(0, 2))
+                    const endHour = hourIndex === hours.length - 1 ? 24 : Number(hours[hourIndex + 1].slice(0, 2))
+                    const date = currentWeekDateIso(dayIndex)
+                    const cellTasks = scheduledTasks.filter((task) => {
+                      const time = taskCalendarTime(task)
+                      const taskHour = time ? Number(time.slice(0, 2)) : -1
+                      return taskCalendarDate(task) === date && taskHour >= startHour && taskHour < endHour
+                    })
+                    return cellTasks.length > 0 ? <div className="calendar-event-stack">{cellTasks.map((task) => (
+                      <button type="button" className="calendar-event" onClick={() => onOpenTask(task.id)} style={{ '--event-color': task.color } as React.CSSProperties} key={task.id}><strong>{task.title}</strong><span>{taskCalendarTime(task)}–{task.endAt?.slice(11, 16) ?? task.end ?? '待定'}</span></button>
+                    ))}</div> : null
                   })()}
-                  {dayIndex === 3 && hourIndex === 2 && <article className="calendar-event muted"><strong>项目复盘</strong><span>13:30–14:00</span></article>}
                 </div>
               ))}
             </div>
@@ -893,7 +931,7 @@ function CalendarPage({ tasks, onNewTask, onOpenTask }: { tasks: Task[]; onNewTa
 }
 
 function ProjectCard({ project }: { project: Project }) {
-  const reachedIndex = Math.max(0, Math.ceil((project.progress / 100) * project.stages.length) - 1)
+  const reachedIndex = project.progress > 0 ? Math.ceil((project.progress / 100) * project.stages.length) - 1 : -1
   return (
     <article className="project-card">
       <div className="project-card-head">
@@ -920,6 +958,11 @@ function ProjectCard({ project }: { project: Project }) {
 }
 
 function ProjectsPage({ projects, onNewProject }: { projects: Project[]; onNewProject: () => void }) {
+  const activeProjects = projects.filter((project) => (project.status ?? 'active') === 'active').length
+  const completedTasks = projects.reduce((sum, project) => sum + project.completedTasks, 0)
+  const averageProgress = projects.length > 0
+    ? Math.round(projects.reduce((sum, project) => sum + project.progress, 0) / projects.length)
+    : 0
   return (
     <div className="page-content">
       <section className="page-heading">
@@ -927,9 +970,9 @@ function ProjectsPage({ projects, onNewProject }: { projects: Project[]; onNewPr
         <button className="primary-button" onClick={onNewProject}><Plus size={17} /> 新建项目</button>
       </section>
       <section className="metric-strip project-metrics">
-        <div><FolderKanban size={19} /><span>进行中</span><strong>3</strong></div>
-        <div><CheckCircle2 size={19} /><span>本月完成</span><strong>12</strong></div>
-        <div><Target size={19} /><span>平均进度</span><strong>47%</strong></div>
+        <div><FolderKanban size={19} /><span>进行中</span><strong>{activeProjects}</strong></div>
+        <div><CheckCircle2 size={19} /><span>已完成任务</span><strong>{completedTasks}</strong></div>
+        <div><Target size={19} /><span>平均进度</span><strong>{averageProgress}%</strong></div>
       </section>
       <div className="project-grid">
         {projects.map((project) => <ProjectCard key={project.id} project={project} />)}
@@ -941,7 +984,12 @@ function ProjectsPage({ projects, onNewProject }: { projects: Project[]; onNewPr
 
 function HabitsPage({ habits, toggleHabit, onNewHabit }: { habits: Habit[]; toggleHabit: (id: number, day: number) => void; onNewHabit: () => void }) {
   const dates = currentWeekDates()
+  const todayIndex = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)).indexOf(berlinIsoDate())
   const completed = habits.reduce((sum, habit) => sum + habit.checked.filter(Boolean).length, 0)
+  const weeklyTarget = habits.reduce((sum, habit) => sum + (habit.scheduleDays?.length || 7), 0)
+  const habitProgress = weeklyTarget > 0 ? Math.round((completed / weeklyTarget) * 100) : 0
+  const longestHabit = habits.reduce<Habit | null>((longest, habit) => !longest || habit.streak > longest.streak ? habit : longest, null)
+  const habitStatus = habits.length === 0 ? '暂无记录' : habitProgress >= 80 ? '很稳定' : habitProgress >= 40 ? '推进中' : '刚开始'
   return (
     <div className="page-content">
       <section className="page-heading">
@@ -949,14 +997,14 @@ function HabitsPage({ habits, toggleHabit, onNewHabit }: { habits: Habit[]; togg
         <button className="primary-button" onClick={onNewHabit}><Plus size={17} /> 新建习惯</button>
       </section>
       <section className="habit-summary">
-        <div><span>本周完成</span><strong>{completed}<small> / {habits.length * 7}</small></strong><ProgressBar value={Math.round((completed / (habits.length * 7)) * 100)} /></div>
-        <div><span>最长连续</span><strong>12<small> 天</small></strong><p>晨间拉伸</p></div>
-        <div><span>本周状态</span><strong className="steady-text">稳定</strong><p>比上周多完成 3 次</p></div>
+        <div><span>本周完成</span><strong>{completed}<small> / {weeklyTarget}</small></strong><ProgressBar value={habitProgress} /></div>
+        <div><span>最长连续</span><strong>{longestHabit?.streak ?? 0}<small> 天</small></strong><p>{longestHabit?.name ?? '尚未创建习惯'}</p></div>
+        <div><span>本周状态</span><strong className="steady-text">{habitStatus}</strong><p>{weeklyTarget > 0 ? `已完成本周计划的 ${habitProgress}%` : '创建习惯后开始记录'}</p></div>
       </section>
       <section className="content-section habit-table-section">
         <div className="habit-table-head">
           <span>习惯</span>
-          {weekDays.map((day, index) => <span className={index === 1 ? 'today' : ''} key={day}>周{day}<strong>{dates[index]}</strong></span>)}
+          {weekDays.map((day, index) => <span className={index === todayIndex ? 'today' : ''} key={day}>周{day}<strong>{dates[index]}</strong></span>)}
           <span>连续</span>
         </div>
         {habits.map((habit) => (
@@ -965,7 +1013,7 @@ function HabitsPage({ habits, toggleHabit, onNewHabit }: { habits: Habit[]; togg
             {habit.checked.map((checked, index) => (
               <button
                 type="button"
-                className={`habit-day ${checked ? 'checked' : ''} ${index === 1 ? 'today' : ''}`}
+                className={`habit-day ${checked ? 'checked' : ''} ${index === todayIndex ? 'today' : ''}`}
                 style={{ '--habit-color': habit.color } as React.CSSProperties}
                 onClick={() => toggleHabit(habit.id, index)}
                 key={index}
@@ -977,62 +1025,92 @@ function HabitsPage({ habits, toggleHabit, onNewHabit }: { habits: Habit[]; togg
             <span className="streak-count">{habit.streak} 天</span>
           </div>
         ))}
+        {habits.length === 0 && <p className="empty-copy habit-empty">还没有习惯记录。</p>}
       </section>
-      <div className="habit-footer-actions">
-        <button className="outline-button"><RotateCcw size={16} /> 补签记录</button>
-        <button className="outline-button"><Moon size={16} /> 设置休息日</button>
-      </div>
     </div>
   )
 }
 
-function ReviewPage({ summary }: { summary: ReviewSummary }) {
-  const categories = [
-    { label: '工作', value: 78, color: '#496d5b', time: '8h 20m' },
-    { label: '学习', value: 64, color: '#b96552', time: '5h 40m' },
-    { label: '健康', value: 52, color: '#58748f', time: '4h 10m' },
-    { label: '生活', value: 38, color: '#a1843e', time: '2h 25m' },
-  ]
-  const weekValues = [42, 68, 55, 82, 73, 48, 64]
-  const hours = Math.floor(summary.completedMinutes / 60)
-  const minutes = summary.completedMinutes % 60
+function ReviewPage({ summary, tasks }: { summary: ReviewSummary; tasks: Task[] }) {
+  const weekDates = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index))
+  const weekTasks = tasks.filter((task) => {
+    const date = taskReviewDate(task)
+    return date !== null && weekDates.includes(date)
+  })
+  const completedWeekTasks = weekTasks.filter((task) => task.completed)
+  const completedCount = completedWeekTasks.length
+  const totalCount = weekTasks.length
+  const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
+  const completedMinutes = completedWeekTasks.reduce((sum, task) => sum + task.duration, 0)
+  const daily = weekDates.map((date) => {
+    const dayTasks = tasks.filter((task) => taskReviewDate(task) === date)
+    const completed = dayTasks.filter((task) => task.completed).length
+    return {
+      total: dayTasks.length,
+      completed,
+      value: dayTasks.length > 0 ? Math.round((completed / dayTasks.length) * 100) : 0,
+    }
+  })
+  const completedThisWeek = tasks.filter((task) => {
+    const date = task.completedAt?.slice(0, 10) ?? taskReviewDate(task)
+    return task.completed && date !== null && weekDates.includes(date)
+  })
+  const categoryMinutes = completedThisWeek.reduce<Record<string, { label: string; color: string; minutes: number }>>((result, task) => {
+    const key = task.category || '未分类'
+    const current = result[key] ?? { label: key, color: task.color, minutes: 0 }
+    current.minutes += task.duration
+    result[key] = current
+    return result
+  }, {})
+  const totalCategoryMinutes = completedThisWeek.reduce((sum, task) => sum + task.duration, 0)
+  const categoryInvestment = Object.values(categoryMinutes)
+    .sort((left, right) => right.minutes - left.minutes)
+    .map((category) => ({
+      ...category,
+      value: totalCategoryMinutes > 0 ? Math.round((category.minutes / totalCategoryMinutes) * 100) : 0,
+    }))
+  const hasDailyData = daily.some((day) => day.total > 0)
+  const strongestCategory = categoryInvestment[0]
+  const hours = Math.floor(completedMinutes / 60)
+  const minutes = completedMinutes % 60
   return (
     <div className="page-content">
       <section className="page-heading">
         <div><p className="eyebrow">REVIEW</p><h1>回顾</h1><p>看见真实的节奏，再决定下一步。</p></div>
-        <button className="date-button">本周 <ChevronDown size={15} /></button>
+        <span className="date-button review-period">本周</span>
       </section>
       <section className="review-overview">
-        <div className="review-score"><span>本周完成率</span><strong>{summary.completionRate}%</strong><p>每一次完成都会记录</p></div>
-        <div><CheckCircle2 size={20} /><span>完成任务</span><strong>{summary.completed}</strong><small>共计划 {summary.total} 项</small></div>
+        <div className="review-score"><span>本周完成率</span><strong>{completionRate}%</strong><p>每一次完成都会记录</p></div>
+        <div><CheckCircle2 size={20} /><span>完成任务</span><strong>{completedCount}</strong><small>共计划 {totalCount} 项</small></div>
         <div><Clock3 size={20} /><span>投入时间</span><strong>{hours}h {minutes}m</strong><small>按已完成任务估算</small></div>
         <div><TimerReset size={20} /><span>逾期任务</span><strong>{summary.overdue}</strong><small>可以随时重新安排</small></div>
       </section>
       <div className="review-grid">
         <section className="content-section chart-section">
           <div className="section-title-row"><div><h2>每日完成情况</h2><span>任务完成率</span></div><TrendingUp size={18} /></div>
-          <div className="bar-chart">
-            {weekValues.map((value, index) => <div key={index}><span className={index === 1 ? 'today' : ''} style={{ height: `${value}%` }}><i>{value}%</i></span><small>周{weekDays[index]}</small></div>)}
-          </div>
+          {hasDailyData ? <div className="bar-chart">
+            {daily.map((day, index) => <div key={weekDates[index]}><span className={weekDates[index] === berlinIsoDate() ? 'today' : ''} style={{ height: `${day.value}%` }}><i>{day.value}%</i></span><small>周{weekDays[index]}</small></div>)}
+          </div> : <div className="review-empty"><BarChart3 size={20} /><strong>本周还没有任务记录</strong><span>完成任务后，这里会生成真实趋势。</span></div>}
         </section>
         <section className="content-section category-section">
           <div className="section-title-row"><div><h2>时间投入</h2><span>按生活领域</span></div></div>
-          {categories.map((category) => (
+          {categoryInvestment.map((category) => (
             <div className="category-row" key={category.label}>
               <span className="category-dot" style={{ backgroundColor: category.color }} />
               <strong>{category.label}</strong>
               <ProgressBar value={category.value} color={category.color} />
-              <span>{category.time}</span>
+              <span>{Math.floor(category.minutes / 60)}h {category.minutes % 60}m</span>
             </div>
           ))}
+          {categoryInvestment.length === 0 && <div className="review-empty compact"><Clock3 size={20} /><strong>暂无时间投入</strong><span>只统计本周已完成任务的预计时长。</span></div>}
         </section>
       </div>
       <section className="content-section reflection-section">
-        <div className="section-title-row"><div><h2>本周回顾</h2><span>留下一点对自己的观察</span></div><button className="text-button">编辑</button></div>
+        <div className="section-title-row"><div><h2>本周观察</h2><span>根据现有记录自动整理</span></div></div>
         <div className="reflection-grid">
-          <div><strong>做得不错</strong><p>学习任务集中到上午后，完成率明显提高。三次训练都按计划完成。</p></div>
-          <div><strong>下周调整</strong><p>周三安排过满，晚间任务容易拖延。为临时事项预留两个空档。</p></div>
-          <div><strong>继续保持</strong><p>每天只确定三件重要事项，减少频繁切换带来的消耗。</p></div>
+          <div><strong>本周完成</strong><p>{totalCount > 0 ? `完成 ${completedCount} 项，共记录 ${totalCount} 项，完成率 ${completionRate}%。` : '还没有可供回顾的任务记录。'}</p></div>
+          <div><strong>需要留意</strong><p>{summary.overdue > 0 ? `目前有 ${summary.overdue} 项逾期任务，可以重新安排到合适的时间。` : '目前没有逾期任务。'}</p></div>
+          <div><strong>主要投入</strong><p>{strongestCategory ? `${strongestCategory.label}投入最多，共 ${Math.floor(strongestCategory.minutes / 60)} 小时 ${strongestCategory.minutes % 60} 分钟。` : '完成带分类的任务后，这里会显示主要投入方向。'}</p></div>
         </div>
       </section>
     </div>
@@ -1612,7 +1690,7 @@ export default function App() {
         {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor({ type: 'task', schedule: true })} onOpenTask={openTask} />}
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
         {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} />}
-        {page === 'review' && <ReviewPage summary={review} />}
+        {page === 'review' && <ReviewPage summary={review} tasks={tasks} />}
         {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />

@@ -14,6 +14,7 @@ final class Views
         $start = self::localDate($row['start_at'] ?? null, $timezone);
         $end = self::localDate($row['end_at'] ?? null, $timezone);
         $due = self::localDate($row['due_at'] ?? null, $timezone);
+        $completed = self::localDate($row['completed_at'] ?? null, $timezone);
 
         return [
             'id' => (int) $row['id'],
@@ -37,6 +38,7 @@ final class Views
             'status' => $row['status'],
             'recurrenceRule' => $row['recurrence_rule'] ?? null,
             'reminderMinutes' => isset($row['reminder_minutes']) ? (int) $row['reminder_minutes'] : null,
+            'completedAt' => $completed?->format(DATE_ATOM),
             'subtasks' => array_map(static fn (array $subtask): array => [
                 'id' => (int) $subtask['id'],
                 'title' => $subtask['title'],
