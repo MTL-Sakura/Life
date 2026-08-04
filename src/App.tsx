@@ -15,6 +15,7 @@ import {
   Circle,
   Clock3,
   Dumbbell,
+  Download,
   Eye,
   EyeOff,
   FolderKanban,
@@ -90,6 +91,34 @@ const palette = ['#496d5b', '#b96552', '#58748f', '#a1843e', '#7a6b87']
 type TaskDraft = Partial<Task> & {
   title: string
   subtasks?: string[]
+}
+
+type SettingsSectionKey = 'account' | 'reminders' | 'schedule' | 'data'
+
+const settingsSections: Array<{ key: SettingsSectionKey; label: string; icon: typeof User }> = [
+  { key: 'account', label: '账户', icon: User },
+  { key: 'reminders', label: '提醒', icon: Bell },
+  { key: 'schedule', label: '日程', icon: CalendarRange },
+  { key: 'data', label: '数据', icon: Archive },
+]
+
+function routeFromLocation(): { page: PageKey; settingsSection: SettingsSectionKey } {
+  const parts = window.location.pathname.split('/').filter(Boolean)
+  const page = parts[0]
+  const validPages: PageKey[] = ['today', 'inbox', 'calendar', 'projects', 'habits', 'review', 'settings']
+  const settingsSection = settingsSections.some(({ key }) => key === parts[1])
+    ? parts[1] as SettingsSectionKey
+    : 'account'
+
+  if (page === 'settings') return { page: 'settings', settingsSection }
+  if (validPages.includes(page as PageKey)) return { page: page as PageKey, settingsSection: 'account' }
+  return { page: 'today', settingsSection: 'account' }
+}
+
+function pathForPage(page: PageKey, settingsSection: SettingsSectionKey = 'account') {
+  if (page === 'today') return '/'
+  if (page === 'settings') return `/settings/${settingsSection}`
+  return `/${page}`
 }
 
 function berlinDate() {
@@ -849,15 +878,27 @@ function ReviewPage({ summary }: { summary: ReviewSummary }) {
   )
 }
 
-function SettingsPage({ settings: initialSettings, onSave, onTestMail, onLogout }: {
+function SettingsPage({ settings: initialSettings, activeSection, dataCounts, onSectionChange, onSave, onTestMail, onChangePassword, onExportData, onLogout }: {
   settings: UserSettings
+  activeSection: SettingsSectionKey
+  dataCounts: { tasks: number; projects: number; habits: number; categories: number }
+  onSectionChange: (section: SettingsSectionKey) => void
   onSave: (settings: UserSettings) => Promise<void>
   onTestMail: () => Promise<void>
+  onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>
+  onExportData: () => Promise<void>
   onLogout: () => Promise<void>
 }) {
   const [settings, setSettings] = useState(initialSettings)
   const [saving, setSaving] = useState(false)
   const [testingMail, setTestingMail] = useState(false)
+  const [changingPassword, setChangingPassword] = useState(false)
+  const [passwordOpen, setPasswordOpen] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [passwordError, setPasswordError] = useState('')
+  const [exporting, setExporting] = useState(false)
 
   useEffect(() => setSettings(initialSettings), [initialSettings])
 
@@ -878,43 +919,118 @@ function SettingsPage({ settings: initialSettings, onSave, onTestMail, onLogout 
       setTestingMail(false)
     }
   }
+
+  async function changePassword(event: FormEvent) {
+    event.preventDefault()
+    setPasswordError('')
+    if (newPassword.length < 10) {
+      setPasswordError('新密码至少需要 10 位。')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError('两次输入的新密码不一致。')
+      return
+    }
+
+    setChangingPassword(true)
+    try {
+      await onChangePassword(currentPassword, newPassword)
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setPasswordOpen(false)
+    } catch (error) {
+      setPasswordError(error instanceof Error ? error.message : '密码修改失败。')
+    } finally {
+      setChangingPassword(false)
+    }
+  }
+
+  async function exportData() {
+    setExporting(true)
+    try {
+      await onExportData()
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <div className="page-content settings-page">
       <section className="page-heading"><div><p className="eyebrow">SETTINGS</p><h1>设置</h1><p>让看板按照你的生活节奏工作。</p></div></section>
       <div className="settings-layout">
-        <nav className="settings-nav">
-          <button className="active"><User size={17} />账户</button>
-          <button><Bell size={17} />提醒</button>
-          <button><CalendarRange size={17} />日程</button>
-          <button><Archive size={17} />数据</button>
+        <nav className="settings-nav" aria-label="设置分区">
+          {settingsSections.map(({ key, label, icon: Icon }) => (
+            <button type="button" className={activeSection === key ? 'active' : ''} onClick={() => onSectionChange(key)} aria-current={activeSection === key ? 'page' : undefined} key={key}>
+              <Icon size={17} />{label}
+            </button>
+          ))}
         </nav>
         <div className="settings-main">
-          <section className="settings-section">
-            <div className="settings-title"><div><ShieldCheck size={19} /><div><h2>账户与安全</h2><p>单用户账户</p></div></div></div>
-            <div className="form-grid">
-              <label><span>显示名称</span><input value={settings.displayName} onChange={(event) => setSettings({ ...settings, displayName: event.target.value })} /></label>
-              <label><span>登录用户名</span><input value="sakura" disabled /></label>
-              <label className="full"><span>邮箱地址</span><div className="field-with-icon"><Mail size={17} /><input value={settings.email} onChange={(event) => setSettings({ ...settings, email: event.target.value })} type="email" /></div></label>
+          {activeSection === 'account' && (
+            <section className="settings-section settings-panel">
+              <div className="settings-title"><div><ShieldCheck size={19} /><div><h2>账户与安全</h2><p>单用户账户</p></div></div></div>
+              <div className="form-grid">
+                <label><span>显示名称</span><input value={settings.displayName} onChange={(event) => setSettings({ ...settings, displayName: event.target.value })} /></label>
+                <label><span>登录用户名</span><input value="sakura" disabled /></label>
+                <label className="full"><span>邮箱地址</span><div className="field-with-icon"><Mail size={17} /><input value={settings.email} onChange={(event) => setSettings({ ...settings, email: event.target.value })} type="email" /></div></label>
+              </div>
+              <button type="button" className="outline-button" onClick={() => { setPasswordOpen(!passwordOpen); setPasswordError('') }}><LockKeyhole size={16} /> 修改密码</button>
+              {passwordOpen && (
+                <form className="password-form" onSubmit={changePassword}>
+                  <div className="form-grid">
+                    <label className="full"><span>当前密码</span><input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>
+                    <label><span>新密码</span><input type="password" autoComplete="new-password" minLength={10} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /></label>
+                    <label><span>确认新密码</span><input type="password" autoComplete="new-password" minLength={10} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required /></label>
+                  </div>
+                  {passwordError && <p className="form-error">{passwordError}</p>}
+                  <button className="primary-button" disabled={changingPassword}>{changingPassword ? '修改中…' : '确认修改'}</button>
+                </form>
+              )}
+            </section>
+          )}
+
+          {activeSection === 'reminders' && (
+            <section className="settings-section settings-panel">
+              <div className="settings-title"><div><Bell size={19} /><div><h2>邮件提醒</h2><p>提醒将按照柏林时间发送</p></div></div></div>
+              <div className="setting-row"><div><strong>任务开始前提醒</strong><span>默认提前 {settings.taskReminderMinutes} 分钟</span></div><Toggle checked={settings.emailReminders} onChange={() => setSettings({ ...settings, emailReminders: !settings.emailReminders })} /></div>
+              <div className="setting-row"><div><strong>每日收尾邮件</strong><span>每天 {settings.dailySummaryTime.slice(0, 5)} 汇总进度</span></div><Toggle checked={settings.dailySummary} onChange={() => setSettings({ ...settings, dailySummary: !settings.dailySummary })} /></div>
+              <div className="setting-row"><div><strong>逾期任务提醒</strong><span>每天上午发送一次</span></div><Toggle checked={settings.overdueReminder} onChange={() => setSettings({ ...settings, overdueReminder: !settings.overdueReminder })} /></div>
+              <button type="button" className="outline-button" onClick={testMail} disabled={testingMail}><Mail size={16} /> {testingMail ? '发送中…' : '发送测试邮件'}</button>
+            </section>
+          )}
+
+          {activeSection === 'schedule' && (
+            <section className="settings-section settings-panel">
+              <div className="settings-title"><div><CalendarRange size={19} /><div><h2>日期与时间</h2><p>日程和提醒的默认规则</p></div></div></div>
+              <div className="form-grid">
+                <label><span>时区</span><select value={settings.timezone} onChange={(event) => setSettings({ ...settings, timezone: event.target.value })}><option value="Europe/Berlin">Europe/Berlin</option><option value="Asia/Shanghai">Asia/Shanghai</option></select></label>
+                <label><span>一周开始于</span><select value={settings.weekStartsOn} onChange={(event) => setSettings({ ...settings, weekStartsOn: event.target.value as 'monday' | 'sunday' })}><option value="monday">星期一</option><option value="sunday">星期日</option></select></label>
+                <label><span>任务默认提前提醒</span><input type="number" min="0" max="10080" value={settings.taskReminderMinutes} onChange={(event) => setSettings({ ...settings, taskReminderMinutes: Number(event.target.value) })} /></label>
+                <label><span>每日收尾时间</span><input type="time" value={settings.dailySummaryTime.slice(0, 5)} onChange={(event) => setSettings({ ...settings, dailySummaryTime: `${event.target.value}:00` })} /></label>
+              </div>
+            </section>
+          )}
+
+          {activeSection === 'data' && (
+            <section className="settings-section settings-panel">
+              <div className="settings-title"><div><Archive size={19} /><div><h2>数据备份</h2><p>导出当前账户的完整看板数据</p></div></div></div>
+              <div className="data-summary">
+                <div><strong>{dataCounts.tasks}</strong><span>任务</span></div>
+                <div><strong>{dataCounts.projects}</strong><span>项目</span></div>
+                <div><strong>{dataCounts.habits}</strong><span>习惯</span></div>
+                <div><strong>{dataCounts.categories}</strong><span>分类</span></div>
+              </div>
+              <button type="button" className="outline-button" onClick={exportData} disabled={exporting}><Download size={16} /> {exporting ? '导出中…' : '导出 JSON 备份'}</button>
+            </section>
+          )}
+
+          {activeSection !== 'data' && (
+            <div className="settings-actions">
+              <button type="button" className="primary-button" onClick={save} disabled={saving}>{saving ? '保存中…' : '保存设置'}</button>
+              {activeSection === 'account' && <button type="button" className="danger-button" onClick={onLogout}><LogOut size={16} /> 退出登录</button>}
             </div>
-            <button className="outline-button"><LockKeyhole size={16} /> 修改密码</button>
-          </section>
-          <section className="settings-section">
-            <div className="settings-title"><div><Bell size={19} /><div><h2>邮件提醒</h2><p>提醒将按照柏林时间发送</p></div></div></div>
-            <div className="setting-row"><div><strong>任务开始前提醒</strong><span>默认提前 {settings.taskReminderMinutes} 分钟</span></div><Toggle checked={settings.emailReminders} onChange={() => setSettings({ ...settings, emailReminders: !settings.emailReminders })} /></div>
-            <div className="setting-row"><div><strong>每日收尾邮件</strong><span>每天 {settings.dailySummaryTime.slice(0, 5)} 汇总进度</span></div><Toggle checked={settings.dailySummary} onChange={() => setSettings({ ...settings, dailySummary: !settings.dailySummary })} /></div>
-            <div className="setting-row"><div><strong>逾期任务提醒</strong><span>每天上午发送一次</span></div><Toggle checked={settings.overdueReminder} onChange={() => setSettings({ ...settings, overdueReminder: !settings.overdueReminder })} /></div>
-            <button className="outline-button" onClick={testMail} disabled={testingMail}><Mail size={16} /> {testingMail ? '发送中…' : '发送测试邮件'}</button>
-          </section>
-          <section className="settings-section">
-            <div className="settings-title"><div><CalendarRange size={19} /><div><h2>日期与时间</h2><p>日程和提醒的默认规则</p></div></div></div>
-            <div className="form-grid">
-              <label><span>时区</span><select value={settings.timezone} onChange={(event) => setSettings({ ...settings, timezone: event.target.value })}><option value="Europe/Berlin">Europe/Berlin</option><option value="Asia/Shanghai">Asia/Shanghai</option></select></label>
-              <label><span>一周开始于</span><select value={settings.weekStartsOn} onChange={(event) => setSettings({ ...settings, weekStartsOn: event.target.value as 'monday' | 'sunday' })}><option value="monday">星期一</option><option value="sunday">星期日</option></select></label>
-              <label><span>任务默认提前提醒</span><input type="number" min="0" max="10080" value={settings.taskReminderMinutes} onChange={(event) => setSettings({ ...settings, taskReminderMinutes: Number(event.target.value) })} /></label>
-              <label><span>每日收尾时间</span><input type="time" value={settings.dailySummaryTime.slice(0, 5)} onChange={(event) => setSettings({ ...settings, dailySummaryTime: `${event.target.value}:00` })} /></label>
-            </div>
-          </section>
-          <div className="settings-actions"><button className="primary-button" onClick={save} disabled={saving}>{saving ? '保存中…' : '保存设置'}</button><button className="danger-button" onClick={onLogout}><LogOut size={16} /> 退出登录</button></div>
+          )}
         </div>
       </div>
     </div>
@@ -936,7 +1052,8 @@ function MobileNav({ page, setPage }: { page: PageKey; setPage: (page: PageKey) 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null)
   const [demoMode, setDemoMode] = useState(false)
-  const [page, setPage] = useState<PageKey>('today')
+  const [page, setPage] = useState<PageKey>(() => routeFromLocation().page)
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>(() => routeFromLocation().settingsSection)
   const [tasks, setTasks] = useState(initialTasks)
   const [habits, setHabits] = useState(initialHabits)
   const [projectItems, setProjectItems] = useState(initialProjects)
@@ -955,6 +1072,18 @@ export default function App() {
   const [toast, setToast] = useState('')
 
   const inboxCount = useMemo(() => tasks.filter((task) => !task.completed && task.unscheduled).length, [tasks])
+
+  useEffect(() => {
+    const syncRoute = () => {
+      const route = routeFromLocation()
+      setPage(route.page)
+      setSettingsSection(route.settingsSection)
+      setMenuOpen(false)
+      window.scrollTo({ top: 0 })
+    }
+    window.addEventListener('popstate', syncRoute)
+    return () => window.removeEventListener('popstate', syncRoute)
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -1102,6 +1231,35 @@ export default function App() {
     }
   }
 
+  async function changePassword(currentPassword: string, newPassword: string) {
+    if (demoMode) {
+      showToast('演示模式不会修改真实密码')
+      return
+    }
+    await api.changePassword(currentPassword, newPassword)
+    showToast('登录密码已更新')
+  }
+
+  async function exportData() {
+    try {
+      const data = demoMode
+        ? { exportedAt: new Date().toISOString(), tasks, projects: projectItems, habits, categories, settings }
+        : await api.exportData()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `life-dashboard-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      showToast('数据备份已导出')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '数据导出失败')
+    }
+  }
+
   async function saveTask(draft: TaskDraft) {
     if (!demoMode) {
       const created = await api.createTask(draft)
@@ -1185,7 +1343,18 @@ export default function App() {
   }
 
   function navigate(next: PageKey) {
+    const path = pathForPage(next, settingsSection)
+    if (window.location.pathname !== path) window.history.pushState({}, '', path)
     setPage(next)
+    setMenuOpen(false)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  function navigateSettings(next: SettingsSectionKey) {
+    const path = pathForPage('settings', next)
+    if (window.location.pathname !== path) window.history.pushState({}, '', path)
+    setPage('settings')
+    setSettingsSection(next)
     setMenuOpen(false)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -1212,7 +1381,7 @@ export default function App() {
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor('project')} />}
         {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor('habit')} />}
         {page === 'review' && <ReviewPage summary={review} />}
-        {page === 'settings' && <SettingsPage settings={settings} onSave={saveSettings} onTestMail={testMail} onLogout={logout} />}
+        {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
       {editor === 'task' && <TaskEditor projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}

@@ -85,6 +85,14 @@ export const api = {
     await request('settings.update', { method: 'PATCH', body: settings })
   },
 
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await request('account.password', { method: 'PATCH', body: { currentPassword, newPassword } })
+  },
+
+  async exportData(): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>('data.export')
+  },
+
   async testMail(): Promise<void> {
     await request('mail.test', { method: 'POST' })
   },

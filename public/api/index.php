@@ -254,6 +254,31 @@ switch ($action) {
         }
         Http::json(bootstrapData($db, $userId, $timezone), 201);
 
+    case 'account.password':
+        Http::requireMethod('PATCH', 'POST');
+        $input = Http::input();
+        $currentPassword = (string) ($input['currentPassword'] ?? '');
+        $newPassword = (string) ($input['newPassword'] ?? '');
+        if (strlen($newPassword) < 10) {
+            Http::json(['error' => '新密码至少需要 10 位。'], 422);
+        }
+        $passwordStatement = $db->prepare('SELECT password_hash FROM users WHERE id = ? LIMIT 1');
+        $passwordStatement->execute([$userId]);
+        $passwordHash = $passwordStatement->fetchColumn();
+        if (!is_string($passwordHash) || !password_verify($currentPassword, $passwordHash)) {
+            Http::json(['error' => '当前密码不正确。'], 422);
+        }
+        $db->prepare('UPDATE users SET password_hash = ? WHERE id = ?')->execute([
+            password_hash($newPassword, PASSWORD_DEFAULT),
+            $userId,
+        ]);
+        session_regenerate_id(true);
+        Http::json(['ok' => true]);
+
+    case 'data.export':
+        Http::requireMethod('GET');
+        Http::json(userDataExport($db, $userId, $timezone));
+
     case 'settings.update':
         Http::requireMethod('PATCH', 'POST');
         $input = Http::input();
@@ -495,6 +520,37 @@ function userView(array $user): array
         'email' => $user['email'],
         'displayName' => $user['display_name'],
         'timezone' => $user['timezone'],
+    ];
+}
+
+function userDataExport(PDO $db, int $userId, string $timezone): array
+{
+    $queries = [
+        'account' => 'SELECT username, email, display_name, timezone, created_at, updated_at FROM users WHERE id = ?',
+        'settings' => 'SELECT email_reminders, daily_summary, daily_summary_time, overdue_reminder, task_reminder_minutes, week_starts_on, updated_at FROM user_settings WHERE user_id = ?',
+        'categories' => 'SELECT id, name, color, created_at FROM categories WHERE user_id = ? ORDER BY id',
+        'projects' => 'SELECT * FROM projects WHERE user_id = ? ORDER BY id',
+        'projectStages' => 'SELECT project_stages.* FROM project_stages INNER JOIN projects ON projects.id = project_stages.project_id WHERE projects.user_id = ? ORDER BY project_stages.project_id, project_stages.position',
+        'tasks' => 'SELECT * FROM tasks WHERE user_id = ? ORDER BY id',
+        'subtasks' => 'SELECT subtasks.* FROM subtasks INNER JOIN tasks ON tasks.id = subtasks.task_id WHERE tasks.user_id = ? ORDER BY subtasks.task_id, subtasks.position',
+        'habits' => 'SELECT * FROM habits WHERE user_id = ? ORDER BY id',
+        'habitLogs' => 'SELECT habit_logs.* FROM habit_logs INNER JOIN habits ON habits.id = habit_logs.habit_id WHERE habits.user_id = ? ORDER BY habit_logs.habit_id, habit_logs.log_date',
+        'notifications' => 'SELECT type, reference_key, sent_at, created_at FROM notification_logs WHERE user_id = ? ORDER BY id',
+    ];
+
+    $data = [];
+    foreach ($queries as $key => $sql) {
+        $statement = $db->prepare($sql);
+        $statement->execute([$userId]);
+        $rows = $statement->fetchAll();
+        $data[$key] = in_array($key, ['account', 'settings'], true) ? ($rows[0] ?? null) : $rows;
+    }
+
+    return [
+        'schemaVersion' => 1,
+        'exportedAt' => gmdate('c'),
+        'timezone' => $timezone,
+        'data' => $data,
     ];
 }
 

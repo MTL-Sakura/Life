@@ -21,7 +21,7 @@ if (strlen($password) < 10) {
 $statement = $db->prepare(
     'INSERT INTO users (username, password_hash, email, display_name, timezone)
      VALUES (:username, :password_hash, :email, :display_name, :timezone)
-     ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), email = VALUES(email), display_name = VALUES(display_name), timezone = VALUES(timezone)'
+     ON DUPLICATE KEY UPDATE email = VALUES(email), display_name = VALUES(display_name), timezone = VALUES(timezone)'
 );
 $statement->execute([
     'username' => $username,
