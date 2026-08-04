@@ -1094,8 +1094,12 @@ export default function App() {
       showToast('演示模式不会发送真实邮件')
       return
     }
-    await api.testMail()
-    showToast('测试邮件已发送')
+    try {
+      await api.testMail()
+      showToast('测试邮件已发送')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '测试邮件发送失败')
+    }
   }
 
   async function saveTask(draft: TaskDraft) {

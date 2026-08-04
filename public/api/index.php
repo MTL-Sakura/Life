@@ -2,17 +2,12 @@
 
 declare(strict_types=1);
 
-use DateInterval;
-use DateTimeImmutable;
-use DateTimeZone;
 use Life\Auth;
 use Life\Database;
 use Life\DateTimes;
 use Life\Http;
 use Life\Mailer;
 use Life\Views;
-use PDO;
-use Throwable;
 
 require dirname(__DIR__, 2) . '/server/bootstrap.php';
 
@@ -292,7 +287,12 @@ switch ($action) {
 
     case 'mail.test':
         Http::requireMethod('POST');
-        (new Mailer())->send($user['email'], '人生看板邮件测试', '<h2>邮件提醒已经连接成功</h2><p>以后任务和每日总结会从这里发给你。</p>', '邮件提醒已经连接成功。');
+        try {
+            (new Mailer())->send($user['email'], '人生看板邮件测试', '<h2>邮件提醒已经连接成功</h2><p>以后任务和每日总结会从这里发给你。</p>', '邮件提醒已经连接成功。');
+        } catch (Throwable $error) {
+            error_log((string) $error);
+            Http::json(['error' => '邮件发送失败，请检查 SMTP 配置或服务器网络。'], 502);
+        }
         Http::json(['ok' => true]);
 
     default:

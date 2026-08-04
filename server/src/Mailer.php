@@ -16,6 +16,8 @@ final class Mailer
         $mail->isSMTP();
         $mail->Host = Config::require('SMTP_HOST');
         $mail->Port = (int) Config::get('SMTP_PORT', '465');
+        $mail->Timeout = 15;
+        $mail->Timelimit = 20;
         $mail->SMTPAuth = true;
         $mail->Username = Config::require('SMTP_USERNAME');
         $mail->Password = Config::require('SMTP_PASSWORD');

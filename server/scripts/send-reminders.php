@@ -2,13 +2,8 @@
 
 declare(strict_types=1);
 
-use DateTimeImmutable;
-use DateTimeZone;
 use Life\Database;
 use Life\Mailer;
-use PDO;
-use Throwable;
-
 require dirname(__DIR__) . '/bootstrap.php';
 
 $db = Database::connection();
