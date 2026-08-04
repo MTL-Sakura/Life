@@ -9,6 +9,8 @@ use Life\Database;
 use Life\DateTimes;
 use Life\Http;
 use Life\Mailer;
+use Life\PlanImporter;
+use Life\PlanImportException;
 use Life\Views;
 
 require dirname(__DIR__, 2) . '/server/bootstrap.php';
@@ -334,6 +336,20 @@ switch ($action) {
     case 'data.export':
         Http::requireMethod('GET');
         Http::json(userDataExport($db, $userId, $timezone));
+
+    case 'data.import':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $plan = $input['plan'] ?? null;
+        if (!is_array($plan)) {
+            Http::json(['error' => '请提供有效的计划 JSON。'], 422);
+        }
+        try {
+            $imported = (new PlanImporter())->import($db, $userId, $timezone, $plan);
+            Http::json([...bootstrapData($db, $userId, $timezone), 'imported' => $imported], 201);
+        } catch (PlanImportException $error) {
+            Http::json(['error' => $error->getMessage()], $error->httpStatus());
+        }
 
     case 'settings.update':
         Http::requireMethod('PATCH', 'POST');
@@ -762,6 +778,7 @@ function userDataExport(PDO $db, int $userId, string $timezone): array
         'habitLogs' => 'SELECT habit_logs.* FROM habit_logs INNER JOIN habits ON habits.id = habit_logs.habit_id WHERE habits.user_id = ? ORDER BY habit_logs.habit_id, habit_logs.log_date',
         'notifications' => 'SELECT type, reference_key, sent_at, created_at FROM notification_logs WHERE user_id = ? ORDER BY id',
         'aiPlans' => 'SELECT id, status, model, source_task_ids, target_start_date, target_end_date, proposal_json, error_message, input_tokens, output_tokens, expires_at, applied_at, created_at, updated_at FROM ai_plans WHERE user_id = ? ORDER BY id',
+        'planImports' => 'SELECT import_key, document_name, imported_counts, created_at FROM plan_imports WHERE user_id = ? ORDER BY id',
     ];
 
     $data = [];
@@ -773,7 +790,7 @@ function userDataExport(PDO $db, int $userId, string $timezone): array
     }
 
     return [
-        'schemaVersion' => 3,
+        'schemaVersion' => 4,
         'exportedAt' => gmdate('c'),
         'timezone' => $timezone,
         'data' => $data,

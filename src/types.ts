@@ -124,6 +124,58 @@ export type AiPlan = {
   expiresAt: string
 }
 
+export type PlanImportDocument = {
+  schemaVersion: 1
+  importKey: string
+  name?: string
+  startDate?: 'today' | 'tomorrow' | string
+  timezone?: string
+  categories?: Array<{ name: string; color?: string }>
+  projects?: Array<{
+    key: string
+    title: string
+    description?: string
+    area?: string
+    color?: string
+    currentStage?: string
+    stages?: string[]
+  }>
+  habits?: Array<{
+    name: string
+    description?: string
+    color?: string
+    frequency?: 'daily' | 'weekly' | 'custom'
+    targetCount?: number
+    scheduleDays?: number[]
+    reminderTime?: string | null
+    allowMakeup?: boolean
+  }>
+  tasks?: Array<{
+    title: string
+    notes?: string
+    projectKey?: string | null
+    category?: string | null
+    priority?: Priority
+    duration?: number
+    dateOffset?: number
+    weekday?: number | null
+    startTime?: string | null
+    dueTime?: string | null
+    recurrence?: 'none' | 'daily' | 'weekly' | 'monthly'
+    reminderMinutes?: number
+    subtasks?: string[]
+  }>
+}
+
+export type PlanImportCounts = {
+  categories: number
+  projects: number
+  habits: number
+  tasks: number
+}
+
+export type PlanImportResult = BootstrapData & { imported: PlanImportCounts }
+
 export type BootstrapData = {
   tasks: Task[]
   habits: Habit[]

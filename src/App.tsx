@@ -38,12 +38,13 @@ import {
   TimerReset,
   Trash2,
   TrendingUp,
+  Upload,
   User,
   X,
 } from 'lucide-react'
 import { api } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
-import type { AiPlan, BootstrapData, Category, Habit, PageKey, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BootstrapData, Category, Habit, PageKey, PlanImportCounts, PlanImportDocument, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
   { key: 'today' as const, label: '今日', icon: LayoutDashboard },
@@ -188,6 +189,31 @@ function taskNotifications(tasks: Task[]): DashboardNotification[] {
     const weights = { overdue: 0, upcoming: 1, due: 2 }
     return weights[left.tone] - weights[right.tone] || left.timestamp - right.timestamp
   }).slice(0, 6)
+}
+
+function parsePlanImportJson(value: string): PlanImportDocument {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    throw new Error('JSON 格式不正确，请检查括号、逗号和引号。')
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON 顶层必须是一个对象。')
+  const plan = parsed as Partial<PlanImportDocument>
+  if (plan.schemaVersion !== 1) throw new Error('目前只支持 schemaVersion 1。')
+  if (typeof plan.importKey !== 'string' || !plan.importKey.trim()) throw new Error('JSON 缺少 importKey。')
+  for (const key of ['categories', 'projects', 'habits', 'tasks'] as const) {
+    if (plan[key] !== undefined && !Array.isArray(plan[key])) throw new Error(`${key} 必须是数组。`)
+  }
+  const total = (plan.projects?.length ?? 0) + (plan.habits?.length ?? 0) + (plan.tasks?.length ?? 0)
+  if (total === 0) throw new Error('JSON 中没有可以导入的项目、习惯或任务。')
+  return plan as PlanImportDocument
+}
+
+function planStartDateLabel(value?: string) {
+  if (!value || value === 'tomorrow') return '明天'
+  if (value === 'today') return '今天'
+  return value
 }
 
 function currentWeekDates() {
@@ -1324,7 +1350,7 @@ function ReviewPage({ summary, tasks }: { summary: ReviewSummary; tasks: Task[] 
   )
 }
 
-function SettingsPage({ settings: initialSettings, activeSection, dataCounts, onSectionChange, onSave, onTestMail, onChangePassword, onExportData, onLogout }: {
+function SettingsPage({ settings: initialSettings, activeSection, dataCounts, onSectionChange, onSave, onTestMail, onChangePassword, onExportData, onImportPlan, onLogout }: {
   settings: UserSettings
   activeSection: SettingsSectionKey
   dataCounts: { tasks: number; projects: number; habits: number; categories: number }
@@ -1333,6 +1359,7 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, on
   onTestMail: () => Promise<void>
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>
   onExportData: () => Promise<void>
+  onImportPlan: (plan: PlanImportDocument) => Promise<PlanImportCounts>
   onLogout: () => Promise<void>
 }) {
   const [settings, setSettings] = useState(initialSettings)
@@ -1345,6 +1372,10 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, on
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordError, setPasswordError] = useState('')
   const [exporting, setExporting] = useState(false)
+  const [importText, setImportText] = useState('')
+  const [importPreview, setImportPreview] = useState<PlanImportDocument | null>(null)
+  const [importError, setImportError] = useState('')
+  const [importing, setImporting] = useState(false)
 
   useEffect(() => setSettings(initialSettings), [initialSettings])
 
@@ -1398,6 +1429,41 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, on
       await onExportData()
     } finally {
       setExporting(false)
+    }
+  }
+
+  function previewImport(text = importText) {
+    setImportError('')
+    try {
+      setImportPreview(parsePlanImportJson(text))
+    } catch (error) {
+      setImportPreview(null)
+      setImportError(error instanceof Error ? error.message : '无法读取这份 JSON。')
+    }
+  }
+
+  async function loadImportFile(file: File) {
+    if (file.size > 1024 * 1024) {
+      setImportError('JSON 文件不能超过 1 MB。')
+      return
+    }
+    const text = await file.text()
+    setImportText(text)
+    previewImport(text)
+  }
+
+  async function importPlan() {
+    if (!importPreview) return
+    setImporting(true)
+    setImportError('')
+    try {
+      await onImportPlan(importPreview)
+      setImportText('')
+      setImportPreview(null)
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : '计划导入失败。')
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -1468,6 +1534,32 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, on
                 <div><strong>{dataCounts.categories}</strong><span>分类</span></div>
               </div>
               <button type="button" className="outline-button" onClick={exportData} disabled={exporting}><Download size={16} /> {exporting ? '导出中…' : '导出 JSON 备份'}</button>
+              <div className="settings-divider" />
+              <div className="settings-title"><div><Upload size={19} /><div><h2>计划导入</h2><p>追加项目、习惯和重复任务</p></div></div></div>
+              <textarea
+                className="plan-import-textarea"
+                aria-label="计划 JSON"
+                value={importText}
+                onChange={(event) => { setImportText(event.target.value); setImportPreview(null); setImportError('') }}
+                placeholder={'{\n  "schemaVersion": 1,\n  "importKey": "my-plan-v1"\n}'}
+                spellCheck={false}
+              />
+              <div className="plan-import-actions">
+                <label className="outline-button plan-file-button"><Upload size={16} /> 选择 JSON 文件<input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadImportFile(file); event.currentTarget.value = '' }} /></label>
+                <button type="button" className="outline-button" onClick={() => previewImport()} disabled={!importText.trim()}>检查内容</button>
+              </div>
+              {importError && <p className="form-error">{importError}</p>}
+              {importPreview && (
+                <div className="plan-import-preview">
+                  <div><strong>{importPreview.name ?? '生活计划'}</strong><span>从 {planStartDateLabel(importPreview.startDate)}开始 · {importPreview.timezone ?? settings.timezone}</span></div>
+                  <div className="plan-import-counts">
+                    <span><strong>{importPreview.projects?.length ?? 0}</strong> 项目</span>
+                    <span><strong>{importPreview.habits?.length ?? 0}</strong> 习惯</span>
+                    <span><strong>{importPreview.tasks?.length ?? 0}</strong> 任务</span>
+                  </div>
+                  <button type="button" className="primary-button" onClick={() => void importPlan()} disabled={importing}>{importing ? '导入中…' : '确认导入'}</button>
+                </div>
+              )}
             </section>
           )}
 
@@ -1866,6 +1958,15 @@ export default function App() {
     }
   }
 
+  async function importPlan(plan: PlanImportDocument) {
+    if (demoMode) throw new Error('演示模式不会写入真实数据，请在服务器版本中导入。')
+    const result = await api.importPlan(plan)
+    applyBootstrap(result)
+    const counts = result.imported
+    showToast(`已导入 ${counts.projects} 个项目、${counts.habits} 个习惯和 ${counts.tasks} 个任务`)
+    return counts
+  }
+
   async function saveTask(draft: TaskDraft) {
     if (!demoMode) {
       if (draft.id) {
@@ -2028,7 +2129,7 @@ export default function App() {
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
         {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} />}
         {page === 'review' && <ReviewPage summary={review} tasks={tasks} />}
-        {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onLogout={logout} />}
+        {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onImportPlan={importPlan} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
       {selectedTask && <TaskDetail task={selectedTask} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} />}

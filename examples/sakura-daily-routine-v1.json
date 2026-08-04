@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "importKey": "sakura-daily-routine-v1",
+  "name": "早起、健身、学习与游戏日常",
+  "startDate": "tomorrow",
+  "timezone": "Europe/Berlin",
+  "categories": [
+    { "name": "学习", "color": "#58748f" },
+    { "name": "健康", "color": "#496d5b" },
+    { "name": "游戏", "color": "#7a6b87" },
+    { "name": "生活", "color": "#a1843e" }
+  ],
+  "projects": [
+    {
+      "key": "sharplingo",
+      "title": "SharpLingo 学习",
+      "description": "每天保持三小时学习并完成两节新课。",
+      "area": "学习成长",
+      "color": "#58748f",
+      "currentStage": "稳定完成每日学习",
+      "stages": ["建立每日节奏", "稳定完成两节新课", "持续复习与巩固"]
+    }
+  ],
+  "habits": [
+    {
+      "name": "10点前起床",
+      "description": "9点为目标时间，10点为最晚时间。",
+      "color": "#a1843e",
+      "frequency": "daily",
+      "targetCount": 1,
+      "scheduleDays": [1, 2, 3, 4, 5, 6, 7],
+      "reminderTime": "09:00",
+      "allowMakeup": false
+    },
+    {
+      "name": "吃早餐",
+      "description": "起床后完成早餐。",
+      "color": "#a1843e",
+      "frequency": "daily",
+      "targetCount": 1,
+      "scheduleDays": [1, 2, 3, 4, 5, 6, 7],
+      "reminderTime": "09:20",
+      "allowMakeup": true
+    },
+    {
+      "name": "无氧健身",
+      "description": "每周一、三、五、六出门进行无氧训练。",
+      "color": "#496d5b",
+      "frequency": "custom",
+      "targetCount": 4,
+      "scheduleDays": [1, 3, 5, 6],
+      "reminderTime": "09:40",
+      "allowMakeup": true
+    },
+    {
+      "name": "SharpLingo学习满3小时",
+      "description": "完成两个90分钟学习块。",
+      "color": "#58748f",
+      "frequency": "daily",
+      "targetCount": 1,
+      "scheduleDays": [1, 2, 3, 4, 5, 6, 7],
+      "reminderTime": null,
+      "allowMakeup": true
+    },
+    {
+      "name": "SharpLingo完成两节新课",
+      "description": "每天开启并完成两节新课。",
+      "color": "#58748f",
+      "frequency": "daily",
+      "targetCount": 1,
+      "scheduleDays": [1, 2, 3, 4, 5, 6, 7],
+      "reminderTime": null,
+      "allowMakeup": true
+    },
+    {
+      "name": "睡前洗漱护肤",
+      "description": "完成睡前清洁和护肤。",
+      "color": "#7a6b87",
+      "frequency": "daily",
+      "targetCount": 1,
+      "scheduleDays": [1, 2, 3, 4, 5, 6, 7],
+      "reminderTime": "23:15",
+      "allowMakeup": false
+    }
+  ],
+  "tasks": [
+    {
+      "title": "晨间启动",
+      "notes": "10点前完成起床和早餐。",
+      "category": "生活",
+      "priority": "high",
+      "duration": 30,
+      "startTime": "09:00",
+      "recurrence": "daily",
+      "reminderMinutes": 10,
+      "subtasks": ["起床并离开床铺", "吃早餐"]
+    },
+    {
+      "title": "无氧健身 · 周一",
+      "notes": "包含出门、训练和返回时间。",
+      "category": "健康",
+      "priority": "high",
+      "duration": 90,
+      "weekday": 1,
+      "startTime": "10:00",
+      "recurrence": "weekly",
+      "reminderMinutes": 20,
+      "subtasks": []
+    },
+    {
+      "title": "无氧健身 · 周三",
+      "notes": "包含出门、训练和返回时间。",
+      "category": "健康",
+      "priority": "high",
+      "duration": 90,
+      "weekday": 3,
+      "startTime": "10:00",
+      "recurrence": "weekly",
+      "reminderMinutes": 20,
+      "subtasks": []
+    },
+    {
+      "title": "无氧健身 · 周五",
+      "notes": "包含出门、训练和返回时间。",
+      "category": "健康",
+      "priority": "high",
+      "duration": 90,
+      "weekday": 5,
+      "startTime": "10:00",
+      "recurrence": "weekly",
+      "reminderMinutes": 20,
+      "subtasks": []
+    },
+    {
+      "title": "无氧健身 · 周六",
+      "notes": "包含出门、训练和返回时间。",
+      "category": "健康",
+      "priority": "high",
+      "duration": 90,
+      "weekday": 6,
+      "startTime": "10:00",
+      "recurrence": "weekly",
+      "reminderMinutes": 20,
+      "subtasks": []
+    },
+    {
+      "title": "SharpLingo 第一学习块",
+      "notes": "完成两节新课并记录重点。",
+      "projectKey": "sharplingo",
+      "category": "学习",
+      "priority": "high",
+      "duration": 90,
+      "startTime": "12:15",
+      "recurrence": "daily",
+      "reminderMinutes": 10,
+      "subtasks": ["完成第一节新课", "完成第二节新课", "整理生词和重点"]
+    },
+    {
+      "title": "SharpLingo 第二学习块",
+      "notes": "练习、复习并补足当天三小时学习时间。",
+      "projectKey": "sharplingo",
+      "category": "学习",
+      "priority": "high",
+      "duration": 90,
+      "startTime": "14:45",
+      "recurrence": "daily",
+      "reminderMinutes": 10,
+      "subtasks": ["完成练习", "复习当天内容"]
+    },
+    {
+      "title": "火影手游日常",
+      "notes": "17点前完成。",
+      "category": "游戏",
+      "priority": "low",
+      "duration": 10,
+      "startTime": "16:40",
+      "dueTime": "17:00",
+      "recurrence": "daily",
+      "reminderMinutes": 10,
+      "subtasks": []
+    },
+    {
+      "title": "三角洲日常",
+      "notes": "18点以后完成，预留一小时。",
+      "category": "游戏",
+      "priority": "low",
+      "duration": 60,
+      "startTime": "18:30",
+      "recurrence": "daily",
+      "reminderMinutes": 10,
+      "subtasks": []
+    },
+    {
+      "title": "永劫无间日常",
+      "notes": "22点以后完成。",
+      "category": "游戏",
+      "priority": "low",
+      "duration": 45,
+      "startTime": "22:15",
+      "recurrence": "daily",
+      "reminderMinutes": 10,
+      "subtasks": []
+    },
+    {
+      "title": "睡前洗漱护肤",
+      "notes": "结束当天安排，准备睡觉。",
+      "category": "生活",
+      "priority": "medium",
+      "duration": 20,
+      "startTime": "23:15",
+      "recurrence": "daily",
+      "reminderMinutes": 5,
+      "subtasks": ["洗漱", "护肤"]
+    }
+  ]
+}

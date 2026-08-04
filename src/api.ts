@@ -1,4 +1,4 @@
-import type { AiPlan, BootstrapData, Habit, Project, SessionUser, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BootstrapData, Habit, PlanImportDocument, PlanImportResult, Project, SessionUser, Subtask, Task, UserSettings } from './types'
 
 let csrfToken: string | null = null
 
@@ -95,6 +95,10 @@ export const api = {
 
   async exportData(): Promise<Record<string, unknown>> {
     return request<Record<string, unknown>>('data.export')
+  },
+
+  async importPlan(plan: PlanImportDocument): Promise<PlanImportResult> {
+    return request<PlanImportResult>('data.import', { method: 'POST', body: { plan } })
   },
 
   async testMail(): Promise<void> {
