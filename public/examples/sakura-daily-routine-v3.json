@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "importKey": "sakura-daily-routine-v2",
+  "importKey": "sakura-daily-routine-v3",
   "name": "早起、健身、学习与游戏日常",
   "startDate": "today",
   "timezone": "Europe/Berlin",
@@ -43,6 +43,16 @@
       "allowMakeup": true
     },
     {
+      "name": "吃午餐",
+      "description": "12点左右吃午餐，并留出短暂休息时间。",
+      "color": "#a1843e",
+      "frequency": "daily",
+      "targetCount": 1,
+      "scheduleDays": [1, 2, 3, 4, 5, 6, 7],
+      "reminderTime": "12:00",
+      "allowMakeup": true
+    },
+    {
       "name": "无氧健身",
       "description": "每天出门进行无氧训练。",
       "color": "#496d5b",
@@ -70,6 +80,16 @@
       "targetCount": 1,
       "scheduleDays": [1, 2, 3, 4, 5, 6, 7],
       "reminderTime": null,
+      "allowMakeup": true
+    },
+    {
+      "name": "吃晚餐",
+      "description": "18点30分左右吃晚餐，晚餐后再开始游戏日常。",
+      "color": "#a1843e",
+      "frequency": "daily",
+      "targetCount": 1,
+      "scheduleDays": [1, 2, 3, 4, 5, 6, 7],
+      "reminderTime": "18:30",
       "allowMakeup": true
     },
     {
@@ -107,25 +127,36 @@
       "subtasks": []
     },
     {
+      "title": "午餐与休息",
+      "notes": "健身结束后先整理和洗漱，12点吃午餐并稍作休息。",
+      "category": "生活",
+      "priority": "medium",
+      "duration": 60,
+      "startTime": "12:00",
+      "recurrence": "daily",
+      "reminderMinutes": 10,
+      "subtasks": ["吃午餐", "离开屏幕休息"]
+    },
+    {
       "title": "SharpLingo 第一学习块",
-      "notes": "完成两节新课并记录重点。",
+      "notes": "午餐和休息后完成两节新课并记录重点。",
       "projectKey": "sharplingo",
       "category": "学习",
       "priority": "high",
       "duration": 90,
-      "startTime": "12:15",
+      "startTime": "13:30",
       "recurrence": "daily",
       "reminderMinutes": 10,
       "subtasks": ["完成第一节新课", "完成第二节新课", "整理生词和重点"]
     },
     {
       "title": "SharpLingo 第二学习块",
-      "notes": "练习、复习并补足当天三小时学习时间。",
+      "notes": "与第一学习块间隔近两小时，用于练习、复习并补足当天三小时学习时间。",
       "projectKey": "sharplingo",
       "category": "学习",
       "priority": "high",
       "duration": 90,
-      "startTime": "14:45",
+      "startTime": "16:45",
       "recurrence": "daily",
       "reminderMinutes": 10,
       "subtasks": ["完成练习", "复习当天内容"]
@@ -136,19 +167,30 @@
       "category": "游戏",
       "priority": "low",
       "duration": 10,
-      "startTime": "16:40",
+      "startTime": "16:20",
       "dueTime": "17:00",
       "recurrence": "daily",
       "reminderMinutes": 10,
       "subtasks": []
     },
     {
+      "title": "晚餐与休息",
+      "notes": "学习结束后吃晚餐，游戏日常从晚餐后开始。",
+      "category": "生活",
+      "priority": "medium",
+      "duration": 60,
+      "startTime": "18:30",
+      "recurrence": "daily",
+      "reminderMinutes": 10,
+      "subtasks": ["吃晚餐", "短暂休息"]
+    },
+    {
       "title": "三角洲日常",
-      "notes": "18点以后完成，预留一小时。",
+      "notes": "晚餐结束后完成，预留一小时。",
       "category": "游戏",
       "priority": "low",
       "duration": 60,
-      "startTime": "18:30",
+      "startTime": "19:45",
       "recurrence": "daily",
       "reminderMinutes": 10,
       "subtasks": []

@@ -1518,8 +1518,8 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, pl
     setImportError('')
     try {
       const examplePath = import.meta.env.DEV
-        ? '/public/examples/sakura-daily-routine-v2.json'
-        : '/examples/sakura-daily-routine-v2.json'
+        ? '/public/examples/sakura-daily-routine-v3.json'
+        : '/examples/sakura-daily-routine-v3.json'
       const response = await fetch(examplePath, { headers: { Accept: 'application/json' } })
       if (!response.ok) throw new Error('无法读取推荐日程。')
       const text = await response.text()

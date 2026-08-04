@@ -64,7 +64,7 @@ OPENAI_DAILY_LIMIT=2
 
 AI 每次只读取尚未安排的任务和未来七天的忙碌时间，先生成预览，只有点击“采用安排”后才会修改任务。建议的有效期为 30 分钟；每日调用上限可通过 `OPENAI_DAILY_LIMIT` 调整。
 
-口述计划可以按照 [Life Plan JSON 格式](docs/PLAN_IMPORT.md)整理，然后在“设置 → 数据 → 计划导入”中粘贴或选择文件。示例见 [`public/examples/sakura-daily-routine-v2.json`](public/examples/sakura-daily-routine-v2.json)。导入只追加数据，不会清空现有看板；同一个 `importKey` 不能重复导入，导入后可在数据设置中整批撤销。
+口述计划可以按照 [Life Plan JSON 格式](docs/PLAN_IMPORT.md)整理，然后在“设置 → 数据 → 计划导入”中粘贴或选择文件。示例见 [`public/examples/sakura-daily-routine-v3.json`](public/examples/sakura-daily-routine-v3.json)。导入只追加数据，不会清空现有看板；同一个 `importKey` 不能重复导入，导入后可在数据设置中整批撤销。
 
 邮件提醒需要在宝塔“计划任务”中每 5 分钟执行：
 
