@@ -98,6 +98,32 @@ export type ReviewSummary = {
   overdue: number
 }
 
+export type AiPlanItem = {
+  taskId: number
+  title: string
+  startAt: string
+  endAt: string
+  duration: number
+  priority: Priority
+  reason: string
+}
+
+export type AiPlanSkippedItem = {
+  taskId: number
+  title: string
+  reason: string
+}
+
+export type AiPlan = {
+  id: number
+  model: string
+  summary: string
+  items: AiPlanItem[]
+  skipped: AiPlanSkippedItem[]
+  remainingUses: number
+  expiresAt: string
+}
+
 export type BootstrapData = {
   tasks: Task[]
   habits: Habit[]

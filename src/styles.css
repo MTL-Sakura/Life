@@ -390,6 +390,23 @@ p {
   align-items: center;
 }
 
+.today-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.ai-plan-trigger {
+  border-color: #aab9c2;
+  color: #405f72;
+  background: #f3f7f9;
+}
+
+.ai-plan-trigger:hover {
+  border-color: #6e8999;
+  color: #2e5064;
+}
+
 .today-progress {
   width: 180px;
   display: grid;
@@ -2093,6 +2110,188 @@ p {
   font-size: 21px;
 }
 
+.ai-plan-body {
+  min-height: 280px;
+  padding: 22px;
+}
+
+.ai-plan-loading {
+  min-height: 250px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.ai-plan-loading strong {
+  margin-top: 16px;
+  font-family: Georgia, "Songti SC", serif;
+  font-size: 18px;
+}
+
+.ai-plan-loading p {
+  max-width: 340px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.ai-plan-spinner {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #b4c2ca;
+  border-radius: 7px;
+  color: #4d7185;
+  background: #eef4f6;
+  animation: ai-plan-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ai-plan-pulse {
+  0%, 100% { transform: translateY(0); opacity: 0.72; }
+  50% { transform: translateY(-3px); opacity: 1; }
+}
+
+.ai-plan-error {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: start;
+  gap: 11px;
+  margin-bottom: 16px;
+  padding: 13px;
+  border: 1px solid #d9b5ac;
+  border-radius: 7px;
+  color: #884332;
+  background: #fff7f4;
+}
+
+.ai-plan-error > span {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+}
+
+.ai-plan-error strong,
+.ai-plan-error p {
+  display: block;
+}
+
+.ai-plan-error p {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.ai-plan-summary {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 11px;
+  padding: 2px 0 17px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ai-plan-summary > svg {
+  margin-top: 1px;
+  color: #4d7185;
+}
+
+.ai-plan-summary strong,
+.ai-plan-summary span {
+  display: block;
+}
+
+.ai-plan-summary strong {
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.ai-plan-summary span {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.ai-plan-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ai-plan-item {
+  display: grid;
+  grid-template-columns: 126px 28px minmax(0, 1fr);
+  align-items: start;
+  gap: 11px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.ai-plan-time strong,
+.ai-plan-time span,
+.ai-plan-copy strong,
+.ai-plan-copy small {
+  display: block;
+}
+
+.ai-plan-time strong {
+  font-size: 10px;
+}
+
+.ai-plan-time span {
+  margin-top: 4px;
+  color: #4d7185;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ai-plan-copy strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.ai-plan-copy p {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.ai-plan-copy small {
+  margin-top: 6px;
+  color: var(--subtle);
+  font-size: 9px;
+}
+
+.ai-plan-skipped {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.ai-plan-skipped summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.ai-plan-skipped p {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.4fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 10px;
+  line-height: 1.5;
+}
+
+.ai-plan-skipped span {
+  color: var(--subtle);
+}
+
+.modal-sheet > .modal-actions {
+  padding: 16px 22px 22px;
+}
+
 .editor-form {
   display: flex;
   flex-direction: column;
@@ -2705,7 +2904,13 @@ p {
   }
 
   .today-heading {
-    align-items: flex-end;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .today-heading-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .today-progress {
@@ -3041,6 +3246,26 @@ p {
     margin: 0 -22px -22px;
     padding: 14px 22px calc(14px + env(safe-area-inset-bottom));
     background: var(--paper);
+  }
+
+  .modal-sheet > .modal-actions {
+    bottom: 0;
+    margin: 0;
+    padding: 14px 22px calc(14px + env(safe-area-inset-bottom));
+  }
+
+  .ai-plan-item {
+    grid-template-columns: 100px 26px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .ai-plan-body {
+    padding: 18px;
+  }
+
+  .ai-plan-skipped p {
+    grid-template-columns: 1fr;
+    gap: 3px;
   }
 
   .task-detail-meta {

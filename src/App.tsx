@@ -43,7 +43,7 @@ import {
 } from 'lucide-react'
 import { api } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
-import type { BootstrapData, Category, Habit, PageKey, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BootstrapData, Category, Habit, PageKey, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
   { key: 'today' as const, label: '今日', icon: LayoutDashboard },
@@ -159,6 +159,20 @@ function berlinIsoDate() {
   }).format(new Date())
 }
 
+function shiftIsoDate(date: string, days: number) {
+  const [year, month, day] = date.split('-').map(Number)
+  const shifted = new Date(Date.UTC(year, month - 1, day + days, 12))
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-${String(shifted.getUTCDate()).padStart(2, '0')}`
+}
+
+function localDateTime(date: string, minutes: number) {
+  const shiftedDays = Math.floor(minutes / (24 * 60))
+  const timeMinutes = minutes % (24 * 60)
+  const hour = Math.floor(timeMinutes / 60)
+  const minute = timeMinutes % 60
+  return `${shiftIsoDate(date, shiftedDays)}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`
+}
+
 function currentMonthCells() {
   const [year, month, today] = berlinIsoDate().split('-').map(Number)
   const leadingDays = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7
@@ -246,6 +260,85 @@ function ModalShell({ title, eyebrow, onClose, children }: { title: string; eyeb
         {children}
       </section>
     </div>
+  )
+}
+
+function aiPlanDateLabel(startAt: string) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Europe/Berlin',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'short',
+  }).format(new Date(startAt))
+}
+
+function aiPlanTimeLabel(startAt: string, endAt: string) {
+  const formatter = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Europe/Berlin',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+  return `${formatter.format(new Date(startAt))}–${formatter.format(new Date(endAt))}`
+}
+
+function AiPlannerModal({ plan, loading, applying, error, onClose, onRetry, onApply }: {
+  plan: AiPlan | null
+  loading: boolean
+  applying: boolean
+  error: string
+  onClose: () => void
+  onRetry: () => void
+  onApply: () => void
+}) {
+  return (
+    <ModalShell title="AI 日程建议" eyebrow="SMART PLAN" onClose={onClose}>
+      <div className="ai-plan-body">
+        {loading && (
+          <div className="ai-plan-loading" role="status">
+            <span className="ai-plan-spinner"><Sparkles size={24} /></span>
+            <strong>正在整理接下来一周</strong>
+            <p>会避开现有安排，并检查每项任务的预计时长。</p>
+          </div>
+        )}
+
+        {!loading && error && (
+          <div className="ai-plan-error">
+            <span><X size={19} /></span>
+            <div><strong>没有生成日程建议</strong><p>{error}</p></div>
+          </div>
+        )}
+
+        {!loading && plan && (
+          <>
+            <div className="ai-plan-summary">
+              <Sparkles size={19} />
+              <div><strong>{plan.summary}</strong><span>今天还可以生成 {plan.remainingUses} 次新建议</span></div>
+            </div>
+            <div className="ai-plan-list">
+              {plan.items.map((item) => (
+                <article className="ai-plan-item" key={item.taskId}>
+                  <div className="ai-plan-time"><strong>{aiPlanDateLabel(item.startAt)}</strong><span>{aiPlanTimeLabel(item.startAt, item.endAt)}</span></div>
+                  <span className={`priority priority-${item.priority}`}>{priorityLabels[item.priority]}</span>
+                  <div className="ai-plan-copy"><strong>{item.title}</strong><p>{item.reason}</p><small>{item.duration} 分钟</small></div>
+                </article>
+              ))}
+            </div>
+            {plan.skipped.length > 0 && (
+              <details className="ai-plan-skipped">
+                <summary>暂未安排 {plan.skipped.length} 项</summary>
+                {plan.skipped.map((item) => <p key={item.taskId}><strong>{item.title}</strong><span>{item.reason}</span></p>)}
+              </details>
+            )}
+          </>
+        )}
+      </div>
+      <footer className="modal-actions">
+        <button type="button" className="outline-button" onClick={onClose}>{plan ? '暂不采用' : '关闭'}</button>
+        {error && <button type="button" className="primary-button" onClick={onRetry}>重新生成</button>}
+        {plan && <button type="button" className="primary-button" onClick={onApply} disabled={applying}>{applying ? '写入中…' : `采用这 ${plan.items.length} 项安排`}</button>}
+      </footer>
+    </ModalShell>
   )
 }
 
@@ -663,7 +756,7 @@ function TaskCheck({ task, onToggle }: { task: Task; onToggle: (id: number) => v
   )
 }
 
-function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask, toggleTask, toggleHabit, onOpenTask, onScheduleTask, onNavigate }: {
+function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask, toggleTask, toggleHabit, onOpenTask, onScheduleTask, onNavigate, onAiPlan }: {
   tasks: Task[]
   habits: Habit[]
   projects: Project[]
@@ -675,8 +768,11 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
   onOpenTask: (id: number) => void
   onScheduleTask: (id: number) => void
   onNavigate: (page: PageKey) => void
+  onAiPlan: () => void
 }) {
-  const scheduled = tasks.filter((task) => !task.unscheduled)
+  const scheduled = tasks
+    .filter((task) => !task.unscheduled && taskCalendarDate(task) === berlinIsoDate())
+    .sort((left, right) => (taskCalendarTime(left) ?? '').localeCompare(taskCalendarTime(right) ?? ''))
   const completed = scheduled.filter((task) => task.completed).length
   const progress = Math.round((completed / Math.max(scheduled.length, 1)) * 100)
   const focusMinutes = scheduled.reduce((sum, task) => sum + task.duration, 0)
@@ -697,10 +793,13 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
           <h1>把今天过清楚</h1>
           <p>{berlinDate()}，已经完成 {completed} 件事。</p>
         </div>
-        <div className="today-progress">
-          <strong>{progress}%</strong>
-          <span>今日进度</span>
-          <ProgressBar value={progress} />
+        <div className="today-heading-actions">
+          <button type="button" className="outline-button ai-plan-trigger" onClick={onAiPlan}><Sparkles size={17} /> AI 安排</button>
+          <div className="today-progress">
+            <strong>{progress}%</strong>
+            <span>今日进度</span>
+            <ProgressBar value={progress} />
+          </div>
         </div>
       </section>
 
@@ -735,6 +834,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
                   </div>
                 </article>
               ))}
+              {scheduled.length === 0 && <p className="empty-copy">今天还没有安排。</p>}
             </div>
           </section>
 
@@ -1310,6 +1410,11 @@ export default function App() {
   const [quickEntry, setQuickEntry] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [toast, setToast] = useState('')
+  const [aiPlannerOpen, setAiPlannerOpen] = useState(false)
+  const [aiPlan, setAiPlan] = useState<AiPlan | null>(null)
+  const [aiPlanLoading, setAiPlanLoading] = useState(false)
+  const [aiPlanApplying, setAiPlanApplying] = useState(false)
+  const [aiPlanError, setAiPlanError] = useState('')
 
   const inboxCount = useMemo(() => tasks.filter((task) => !task.completed && task.unscheduled).length, [tasks])
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId), [selectedTaskId, tasks])
@@ -1369,6 +1474,131 @@ export default function App() {
   function showToast(message: string) {
     setToast(message)
     window.setTimeout(() => setToast(''), 2200)
+  }
+
+  function demoAiPlan(): AiPlan {
+    const source = tasks.filter((task) => !task.completed && task.unscheduled).slice(0, 8)
+    if (source.length === 0) throw new Error('收集箱里没有需要安排的任务。')
+    const today = berlinIsoDate()
+    const nowParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Berlin',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date())
+    const nowMinutes = Number(nowParts.find((part) => part.type === 'hour')?.value ?? 8) * 60
+      + Number(nowParts.find((part) => part.type === 'minute')?.value ?? 0)
+    const occupied = tasks.flatMap((task) => {
+      const date = task.startAt?.slice(0, 10) ?? (task.start && !task.unscheduled ? today : null)
+      const start = task.startAt?.slice(11, 16) ?? task.start
+      const end = task.endAt?.slice(11, 16) ?? task.end
+      if (task.completed || !date || !start || !end) return []
+      return [{
+        date,
+        start: Number(start.slice(0, 2)) * 60 + Number(start.slice(3, 5)),
+        end: Number(end.slice(0, 2)) * 60 + Number(end.slice(3, 5)),
+      }]
+    })
+    const items: AiPlan['items'] = []
+    const skipped: AiPlan['skipped'] = []
+
+    source.forEach((task) => {
+      const duration = Math.max(1, task.duration)
+      let slot: { date: string; start: number } | null = null
+      for (let dayOffset = 0; dayOffset < 7 && !slot; dayOffset += 1) {
+        const date = shiftIsoDate(today, dayOffset)
+        let cursor = dayOffset === 0
+          ? Math.max(8 * 60, Math.ceil((nowMinutes + 15) / 15) * 15)
+          : 8 * 60
+        while (cursor + duration <= 21 * 60) {
+          const conflict = occupied
+            .filter((block) => block.date === date && cursor < block.end && cursor + duration > block.start)
+            .sort((left, right) => left.end - right.end)[0]
+          if (!conflict) {
+            slot = { date, start: cursor }
+            break
+          }
+          cursor = Math.ceil((conflict.end + 15) / 15) * 15
+        }
+      }
+
+      if (!slot) {
+        skipped.push({ taskId: task.id, title: task.title, reason: '未来七天没有足够长的空闲时段。' })
+        return
+      }
+      occupied.push({ date: slot.date, start: slot.start, end: slot.start + duration + 15 })
+      items.push({
+        taskId: task.id,
+        title: task.title,
+        startAt: localDateTime(slot.date, slot.start),
+        endAt: localDateTime(slot.date, slot.start + duration),
+        duration,
+        priority: task.priority,
+        reason: task.dueAt ? '优先靠近截止时间，并保留任务间的缓冲。' : '按照优先级放入可用时段。',
+      })
+    })
+    if (items.length === 0) throw new Error('未来七天没有足够的空闲时间，请先调整现有日程。')
+    return {
+      id: -1,
+      model: 'demo',
+      summary: `已为 ${items.length} 项任务留出完整时间，并在任务之间保留缓冲。`,
+      items,
+      skipped,
+      remainingUses: 1,
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+    }
+  }
+
+  async function generateAiPlan() {
+    setAiPlanLoading(true)
+    setAiPlan(null)
+    setAiPlanError('')
+    try {
+      setAiPlan(demoMode ? demoAiPlan() : await api.createAiPlan())
+    } catch (error) {
+      setAiPlanError(error instanceof Error ? error.message : 'AI 暂时无法生成安排，请稍后再试。')
+    } finally {
+      setAiPlanLoading(false)
+    }
+  }
+
+  function openAiPlanner() {
+    setAiPlannerOpen(true)
+    void generateAiPlan()
+  }
+
+  async function applyAiPlan() {
+    if (!aiPlan) return
+    setAiPlanApplying(true)
+    setAiPlanError('')
+    try {
+      if (demoMode) {
+        const itemMap = new Map(aiPlan.items.map((item) => [item.taskId, item]))
+        setTasks((current) => current.map((task) => {
+          const item = itemMap.get(task.id)
+          return item ? {
+            ...task,
+            startAt: item.startAt,
+            endAt: item.endAt,
+            start: item.startAt.slice(11, 16),
+            end: item.endAt.slice(11, 16),
+            duration: item.duration,
+            priority: item.priority,
+            unscheduled: false,
+            status: 'planned',
+          } : task
+        }))
+      } else {
+        applyBootstrap(await api.applyAiPlan(aiPlan.id))
+      }
+      setAiPlannerOpen(false)
+      setAiPlan(null)
+      showToast(`已采用 ${aiPlan.items.length} 项 AI 安排`)
+    } catch (error) {
+      setAiPlanError(error instanceof Error ? error.message : 'AI 安排保存失败，请稍后再试。')
+    } finally {
+      setAiPlanApplying(false)
+    }
   }
 
   async function addTask() {
@@ -1685,7 +1915,7 @@ export default function App() {
       </div>
       <div className="app-main">
         <Topbar page={page} onMenu={() => setMenuOpen(true)} />
-        {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} onNavigate={navigate} />}
+        {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} onNavigate={navigate} onAiPlan={openAiPlanner} />}
         {page === 'inbox' && <InboxPage tasks={tasks} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} onNewTask={() => setEditor({ type: 'task' })} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} />}
         {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor({ type: 'task', schedule: true })} onOpenTask={openTask} />}
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
@@ -1698,6 +1928,7 @@ export default function App() {
       {editor?.type === 'task' && <TaskEditor task={editorTask} schedule={editor.schedule} projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}
       {editor?.type === 'project' && <ProjectEditor onClose={() => setEditor(null)} onSave={saveProject} />}
       {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}
+      {aiPlannerOpen && <AiPlannerModal plan={aiPlan} loading={aiPlanLoading} applying={aiPlanApplying} error={aiPlanError} onClose={() => setAiPlannerOpen(false)} onRetry={() => void generateAiPlan()} onApply={() => void applyAiPlan()} />}
       {toast && <div className="toast"><CheckCircle2 size={17} />{toast}</div>}
     </div>
   )

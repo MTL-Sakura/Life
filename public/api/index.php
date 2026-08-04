@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 use Life\Auth;
+use Life\AiPlanner;
+use Life\AiPlannerException;
 use Life\Database;
 use Life\DateTimes;
 use Life\Http;
@@ -374,6 +376,28 @@ switch ($action) {
         }
         Http::json(['ok' => true]);
 
+    case 'ai.plan':
+        Http::requireMethod('POST');
+        try {
+            Http::json(['plan' => (new AiPlanner())->generate($db, $userId, $timezone)], 201);
+        } catch (AiPlannerException $error) {
+            Http::json(['error' => $error->getMessage()], $error->httpStatus());
+        }
+
+    case 'ai.apply':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $planId = (int) ($input['planId'] ?? 0);
+        if ($planId < 1) {
+            Http::json(['error' => 'AI 建议编号不正确。'], 422);
+        }
+        try {
+            (new AiPlanner())->apply($db, $userId, $planId, $timezone);
+            Http::json(bootstrapData($db, $userId, $timezone));
+        } catch (AiPlannerException $error) {
+            Http::json(['error' => $error->getMessage()], $error->httpStatus());
+        }
+
     default:
         Http::json(['error' => '接口不存在。'], 404);
 }
@@ -737,6 +761,7 @@ function userDataExport(PDO $db, int $userId, string $timezone): array
         'habits' => 'SELECT * FROM habits WHERE user_id = ? ORDER BY id',
         'habitLogs' => 'SELECT habit_logs.* FROM habit_logs INNER JOIN habits ON habits.id = habit_logs.habit_id WHERE habits.user_id = ? ORDER BY habit_logs.habit_id, habit_logs.log_date',
         'notifications' => 'SELECT type, reference_key, sent_at, created_at FROM notification_logs WHERE user_id = ? ORDER BY id',
+        'aiPlans' => 'SELECT id, status, model, source_task_ids, target_start_date, target_end_date, proposal_json, error_message, input_tokens, output_tokens, expires_at, applied_at, created_at, updated_at FROM ai_plans WHERE user_id = ? ORDER BY id',
     ];
 
     $data = [];
@@ -748,7 +773,7 @@ function userDataExport(PDO $db, int $userId, string $timezone): array
     }
 
     return [
-        'schemaVersion' => 2,
+        'schemaVersion' => 3,
         'exportedAt' => gmdate('c'),
         'timezone' => $timezone,
         'data' => $data,

@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS ai_plans (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    status ENUM('generating', 'ready', 'applied', 'failed', 'expired') NOT NULL DEFAULT 'generating',
+    model VARCHAR(100) NOT NULL,
+    source_task_ids JSON NOT NULL,
+    target_start_date DATE NOT NULL,
+    target_end_date DATE NOT NULL,
+    proposal_json JSON NULL,
+    error_message VARCHAR(500) NULL,
+    input_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+    output_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+    expires_at DATETIME NOT NULL,
+    applied_at DATETIME NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX ai_plans_user_created_idx (user_id, created_at),
+    INDEX ai_plans_status_expiry_idx (status, expires_at),
+    CONSTRAINT ai_plans_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -1,4 +1,4 @@
-import type { BootstrapData, Habit, Project, SessionUser, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BootstrapData, Habit, Project, SessionUser, Subtask, Task, UserSettings } from './types'
 
 let csrfToken: string | null = null
 
@@ -99,5 +99,14 @@ export const api = {
 
   async testMail(): Promise<void> {
     await request('mail.test', { method: 'POST' })
+  },
+
+  async createAiPlan(): Promise<AiPlan> {
+    const result = await request<{ plan: AiPlan }>('ai.plan', { method: 'POST', body: {} })
+    return result.plan
+  },
+
+  async applyAiPlan(planId: number): Promise<BootstrapData> {
+    return request<BootstrapData>('ai.apply', { method: 'POST', body: { planId } })
   },
 }
