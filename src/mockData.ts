@@ -23,6 +23,7 @@ export const initialTasks: Task[] = [
     start: '11:00',
     end: '12:00',
     duration: 60,
+    isFocus: true,
     completed: false,
   },
   {

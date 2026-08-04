@@ -16,6 +16,18 @@ export type Subtask = {
   position: number
 }
 
+export type FocusSessionStatus = 'running' | 'paused' | 'completed'
+
+export type FocusSession = {
+  id: number
+  status: FocusSessionStatus
+  plannedSeconds: number
+  elapsedSeconds: number
+  startedAt: string
+  lastResumedAt?: string | null
+  endedAt?: string | null
+}
+
 export type Task = {
   id: number
   title: string
@@ -27,6 +39,8 @@ export type Task = {
   end?: string
   due?: string
   duration: number
+  isFocus?: boolean
+  focusSession?: FocusSession | null
   completed: boolean
   unscheduled?: boolean
   status?: 'inbox' | 'planned' | 'in_progress' | 'completed' | 'cancelled'
@@ -158,6 +172,7 @@ export type PlanImportDocument = {
     category?: string | null
     priority?: Priority
     duration?: number
+    focus?: boolean
     dateOffset?: number
     weekday?: number | null
     startTime?: string | null

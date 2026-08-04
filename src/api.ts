@@ -73,6 +73,11 @@ export const api = {
     return result.task
   },
 
+  async focusTask(taskId: number, action: 'start' | 'pause' | 'resume' | 'end'): Promise<Task> {
+    const result = await request<{ task: Task }>(`focus.${action}`, { method: 'POST', body: { taskId } })
+    return result.task
+  },
+
   async createHabit(input: Partial<Habit> & { name: string }): Promise<BootstrapData> {
     return request<BootstrapData>('habits.create', { method: 'POST', body: input })
   },

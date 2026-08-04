@@ -23,6 +23,7 @@
 - `weekday`: `1` 到 `7`，分别表示星期一到星期日；存在时优先于 `dateOffset`。
 - `startTime`、`dueTime`、`reminderTime`: 使用 `HH:MM`。
 - `recurrence`: `none`、`daily`、`weekly`、`monthly`。
+- `focus`: 布尔值；设为 `true` 后，该任务会提供专注计时并计入专注计划，省略时为 `false`。
 
 ## 引用规则
 

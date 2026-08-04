@@ -728,6 +728,10 @@ p {
   background: rgba(251, 250, 247, 0.58);
 }
 
+.today-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .metric-strip > div {
   min-height: 68px;
   display: grid;
@@ -2330,6 +2334,11 @@ p {
   left: 19px;
 }
 
+.switch:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
 .empty-copy {
   color: var(--muted);
   font-size: 10px;
@@ -2635,6 +2644,48 @@ p {
   grid-column: 1 / -1;
 }
 
+.focus-task-field {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  padding: 10px 12px;
+  background: rgba(251, 250, 247, 0.72);
+}
+
+.focus-task-field > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.focus-task-field svg {
+  flex: 0 0 auto;
+  color: var(--green);
+}
+
+.focus-task-field span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.focus-task-field strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.focus-task-field small {
+  color: var(--subtle);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
 .subtask-editor {
   min-width: 0;
   margin: 0;
@@ -2756,6 +2807,86 @@ p {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.focus-timer {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 16px;
+  background: #f8faf7;
+}
+
+.focus-timer-running {
+  border-color: #afc6b9;
+  background: var(--green-light);
+}
+
+.focus-timer-heading,
+.focus-timer-heading > div,
+.focus-timer-heading span,
+.focus-timer-clock,
+.focus-timer-actions {
+  display: flex;
+  align-items: center;
+}
+
+.focus-timer-heading {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.focus-timer-heading > div {
+  min-width: 0;
+  gap: 9px;
+}
+
+.focus-timer-heading svg {
+  color: var(--green);
+}
+
+.focus-timer-heading span {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.focus-timer-heading strong {
+  font-size: 10px;
+}
+
+.focus-timer-heading small {
+  color: var(--subtle);
+  font-size: 8px;
+}
+
+.focus-timer-heading > strong {
+  color: var(--green);
+  font-size: 12px;
+}
+
+.focus-timer-clock {
+  align-items: baseline;
+  gap: 6px;
+  margin: 18px 0 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.focus-timer-clock strong {
+  font-family: var(--serif);
+  font-size: 28px;
+  line-height: 1;
+}
+
+.focus-timer-clock span {
+  color: var(--subtle);
+  font-size: 9px;
+}
+
+.focus-timer-actions {
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .task-detail-section {
@@ -3148,6 +3279,18 @@ p {
 }
 
 @media (max-width: 680px) {
+  .metric-strip.today-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .today-metrics > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .today-metrics > div:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--line);
+  }
+
   .topbar {
     height: 58px;
     padding: 0 14px;
@@ -3234,6 +3377,10 @@ p {
 
   .metric-strip {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .metric-strip.today-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .metric-strip > div {

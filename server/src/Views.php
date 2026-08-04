@@ -9,7 +9,7 @@ use DateTimeZone;
 
 final class Views
 {
-    public static function task(array $row, string $timezone, array $subtasks = []): array
+    public static function task(array $row, string $timezone, array $subtasks = [], ?array $focusSession = null): array
     {
         $start = self::localDate($row['start_at'] ?? null, $timezone);
         $end = self::localDate($row['end_at'] ?? null, $timezone);
@@ -33,6 +33,16 @@ final class Views
             'dueAt' => $due?->format(DATE_ATOM),
             'due' => self::dueLabel($due, $timezone),
             'duration' => (int) $row['estimated_minutes'],
+            'isFocus' => (bool) ($row['is_focus'] ?? false),
+            'focusSession' => $focusSession === null ? null : [
+                'id' => (int) $focusSession['id'],
+                'status' => $focusSession['status'],
+                'plannedSeconds' => (int) $focusSession['planned_seconds'],
+                'elapsedSeconds' => (int) $focusSession['elapsed_seconds'],
+                'startedAt' => self::localDate($focusSession['started_at'], $timezone)?->format(DATE_ATOM),
+                'lastResumedAt' => self::localDate($focusSession['last_resumed_at'] ?? null, $timezone)?->format(DATE_ATOM),
+                'endedAt' => self::localDate($focusSession['ended_at'] ?? null, $timezone)?->format(DATE_ATOM),
+            ],
             'completed' => $row['status'] === 'completed',
             'unscheduled' => $row['status'] === 'inbox' || $row['start_at'] === null,
             'status' => $row['status'],

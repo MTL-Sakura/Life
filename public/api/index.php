@@ -79,8 +79,8 @@ switch ($action) {
         $status = $startAt === null ? 'inbox' : validStatus((string) ($input['status'] ?? 'planned'));
 
         $statement = $db->prepare(
-            'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, recurrence_rule, reminder_minutes, reminder_at)
-             VALUES (:user_id, :project_id, :category_id, :title, :notes, :status, :priority, :start_at, :end_at, :due_at, :estimated_minutes, :recurrence_rule, :reminder_minutes, :reminder_at)'
+            'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, is_focus, recurrence_rule, reminder_minutes, reminder_at)
+             VALUES (:user_id, :project_id, :category_id, :title, :notes, :status, :priority, :start_at, :end_at, :due_at, :estimated_minutes, :is_focus, :recurrence_rule, :reminder_minutes, :reminder_at)'
         );
         $statement->execute([
             'user_id' => $userId,
@@ -94,6 +94,7 @@ switch ($action) {
             'end_at' => $endAt,
             'due_at' => $dueAt,
             'estimated_minutes' => max(1, min(1440, (int) ($input['duration'] ?? 30))),
+            'is_focus' => (int) (bool) ($input['isFocus'] ?? false),
             'recurrence_rule' => nullableString($input['recurrenceRule'] ?? null),
             'reminder_minutes' => $reminderMinutes,
             'reminder_at' => $reminderAt,
@@ -121,6 +122,7 @@ switch ($action) {
             'projectId' => 'project_id',
             'categoryId' => 'category_id',
             'duration' => 'estimated_minutes',
+            'isFocus' => 'is_focus',
             'recurrenceRule' => 'recurrence_rule',
             'reminderMinutes' => 'reminder_minutes',
         ];
@@ -133,6 +135,8 @@ switch ($action) {
                 $value = nullableInt($value);
             } elseif ($inputKey === 'duration') {
                 $value = max(1, min(1440, (int) $value));
+            } elseif ($inputKey === 'isFocus') {
+                $value = (int) (bool) $value;
             } elseif ($inputKey === 'recurrenceRule') {
                 $value = nullableString($value);
             } else {
@@ -237,6 +241,24 @@ switch ($action) {
             (int) (bool) ($input['completed'] ?? false),
             $subtaskId,
         ]);
+        Http::json(['task' => findTask($db, $taskId, $userId, $timezone)]);
+
+    case 'focus.start':
+    case 'focus.pause':
+    case 'focus.resume':
+    case 'focus.end':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $taskId = (int) ($input['taskId'] ?? 0);
+        $task = ownedRow($db, 'tasks', $taskId, $userId);
+        if (!(bool) ($task['is_focus'] ?? false)) {
+            Http::json(['error' => '请先把这个任务设为专注任务。'], 422);
+        }
+        $focusAction = substr($action, strlen('focus.'));
+        $focusError = updateFocusSession($db, $task, $userId, $focusAction);
+        if ($focusError !== null) {
+            Http::json(['error' => $focusError['message']], $focusError['status']);
+        }
         Http::json(['task' => findTask($db, $taskId, $userId, $timezone)]);
 
     case 'habits.create':
@@ -445,9 +467,16 @@ function bootstrapData(PDO $db, int $userId, string $timezone): array
     );
     $tasksStatement->execute([$userId]);
     $taskRows = $tasksStatement->fetchAll();
-    $subtasks = subtaskMap($db, array_map(static fn (array $row): int => (int) $row['id'], $taskRows));
+    $taskIds = array_map(static fn (array $row): int => (int) $row['id'], $taskRows);
+    $subtasks = subtaskMap($db, $taskIds);
+    $focusSessions = focusSessionMap($db, $taskIds);
     $tasks = array_map(
-        static fn (array $row): array => Views::task($row, $timezone, $subtasks[(int) $row['id']] ?? []),
+        static fn (array $row): array => Views::task(
+            $row,
+            $timezone,
+            $subtasks[(int) $row['id']] ?? [],
+            $focusSessions[(int) $row['id']] ?? null
+        ),
         $taskRows
     );
 
@@ -584,7 +613,122 @@ function findTask(PDO $db, int $taskId, int $userId, string $timezone): array
         Http::json(['error' => '任务不存在。'], 404);
     }
 
-    return Views::task($task, $timezone, taskSubtasks($db, $taskId));
+    return Views::task($task, $timezone, taskSubtasks($db, $taskId), latestFocusSession($db, $taskId));
+}
+
+function latestFocusSession(PDO $db, int $taskId, bool $forUpdate = false): ?array
+{
+    $sql = 'SELECT * FROM focus_sessions WHERE task_id = ? ORDER BY id DESC LIMIT 1';
+    if ($forUpdate) {
+        $sql .= ' FOR UPDATE';
+    }
+    $statement = $db->prepare($sql);
+    $statement->execute([$taskId]);
+    $session = $statement->fetch();
+    return $session ?: null;
+}
+
+function focusSessionMap(PDO $db, array $taskIds): array
+{
+    if ($taskIds === []) {
+        return [];
+    }
+    $placeholders = implode(', ', array_fill(0, count($taskIds), '?'));
+    $statement = $db->prepare("SELECT * FROM focus_sessions WHERE task_id IN ({$placeholders}) ORDER BY task_id, id DESC");
+    $statement->execute($taskIds);
+    $map = [];
+    foreach ($statement->fetchAll() as $session) {
+        $taskId = (int) $session['task_id'];
+        if (!isset($map[$taskId])) {
+            $map[$taskId] = $session;
+        }
+    }
+    return $map;
+}
+
+function updateFocusSession(PDO $db, array $task, int $userId, string $action): ?array
+{
+    $db->beginTransaction();
+    try {
+        $session = latestFocusSession($db, (int) $task['id'], true);
+        $now = gmdate('Y-m-d H:i:s');
+
+        if ($action === 'start') {
+            if ($session === null || $session['status'] === 'completed') {
+                $other = $db->prepare("SELECT task_id FROM focus_sessions WHERE user_id = ? AND task_id != ? AND status = 'running' LIMIT 1 FOR UPDATE");
+                $other->execute([$userId, (int) $task['id']]);
+                if ($other->fetchColumn() !== false) {
+                    $db->commit();
+                    return ['message' => '另一个任务正在专注，请先暂停或结束它。', 'status' => 409];
+                }
+                $statement = $db->prepare(
+                    "INSERT INTO focus_sessions (user_id, task_id, status, planned_seconds, elapsed_seconds, started_at, last_resumed_at)
+                     VALUES (?, ?, 'running', ?, 0, ?, ?)"
+                );
+                $statement->execute([
+                    $userId,
+                    (int) $task['id'],
+                    max(60, (int) $task['estimated_minutes'] * 60),
+                    $now,
+                    $now,
+                ]);
+            }
+            $db->commit();
+            return null;
+        }
+
+        if ($session === null || $session['status'] === 'completed') {
+            $db->commit();
+            return ['message' => '这个任务还没有正在进行的专注计时。', 'status' => 409];
+        }
+
+        if ($action === 'pause') {
+            if ($session['status'] !== 'running') {
+                $db->commit();
+                return ['message' => '专注计时已经暂停。', 'status' => 409];
+            }
+            $elapsed = runningFocusElapsed($session);
+            $db->prepare("UPDATE focus_sessions SET status = 'paused', elapsed_seconds = ?, last_resumed_at = NULL WHERE id = ?")
+                ->execute([$elapsed, (int) $session['id']]);
+        } elseif ($action === 'resume') {
+            if ($session['status'] !== 'paused') {
+                $db->commit();
+                return ['message' => '只有暂停中的专注计时可以继续。', 'status' => 409];
+            }
+            $other = $db->prepare("SELECT task_id FROM focus_sessions WHERE user_id = ? AND task_id != ? AND status = 'running' LIMIT 1 FOR UPDATE");
+            $other->execute([$userId, (int) $task['id']]);
+            if ($other->fetchColumn() !== false) {
+                $db->commit();
+                return ['message' => '另一个任务正在专注，请先暂停或结束它。', 'status' => 409];
+            }
+            $db->prepare("UPDATE focus_sessions SET status = 'running', last_resumed_at = ? WHERE id = ?")
+                ->execute([$now, (int) $session['id']]);
+        } elseif ($action === 'end') {
+            $elapsed = $session['status'] === 'running' ? runningFocusElapsed($session) : (int) $session['elapsed_seconds'];
+            $db->prepare("UPDATE focus_sessions SET status = 'completed', elapsed_seconds = ?, last_resumed_at = NULL, ended_at = ? WHERE id = ?")
+                ->execute([$elapsed, $now, (int) $session['id']]);
+        } else {
+            $db->commit();
+            return ['message' => '无法识别专注计时操作。', 'status' => 422];
+        }
+        $db->commit();
+        return null;
+    } catch (Throwable $error) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $error;
+    }
+}
+
+function runningFocusElapsed(array $session): int
+{
+    $elapsed = (int) $session['elapsed_seconds'];
+    if (($session['status'] ?? '') !== 'running' || empty($session['last_resumed_at'])) {
+        return $elapsed;
+    }
+    $resumedAt = strtotime((string) $session['last_resumed_at'] . ' UTC');
+    return $elapsed + max(0, time() - ($resumedAt === false ? time() : $resumedAt));
 }
 
 function taskSubtasks(PDO $db, int $taskId): array
@@ -684,8 +828,8 @@ function createNextRecurringTask(PDO $db, array $task): ?int
     $reminderMinutes = isset($task['reminder_minutes']) ? (int) $task['reminder_minutes'] : null;
 
     $statement = $db->prepare(
-        'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, recurrence_rule, recurrence_source_task_id, reminder_minutes, reminder_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, is_focus, recurrence_rule, recurrence_source_task_id, reminder_minutes, reminder_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     $statement->execute([
         (int) $task['user_id'],
@@ -699,6 +843,7 @@ function createNextRecurringTask(PDO $db, array $task): ?int
         $nextEnd,
         $nextDue,
         (int) $task['estimated_minutes'],
+        (int) ($task['is_focus'] ?? 0),
         $task['recurrence_rule'],
         (int) $task['id'],
         $reminderMinutes,
@@ -842,6 +987,7 @@ function userDataExport(PDO $db, int $userId, string $timezone): array
         'projects' => 'SELECT * FROM projects WHERE user_id = ? ORDER BY id',
         'projectStages' => 'SELECT project_stages.* FROM project_stages INNER JOIN projects ON projects.id = project_stages.project_id WHERE projects.user_id = ? ORDER BY project_stages.project_id, project_stages.position',
         'tasks' => 'SELECT * FROM tasks WHERE user_id = ? ORDER BY id',
+        'focusSessions' => 'SELECT * FROM focus_sessions WHERE user_id = ? ORDER BY id',
         'subtasks' => 'SELECT subtasks.* FROM subtasks INNER JOIN tasks ON tasks.id = subtasks.task_id WHERE tasks.user_id = ? ORDER BY subtasks.task_id, subtasks.position',
         'habits' => 'SELECT * FROM habits WHERE user_id = ? ORDER BY id',
         'habitLogs' => 'SELECT habit_logs.* FROM habit_logs INNER JOIN habits ON habits.id = habit_logs.habit_id WHERE habits.user_id = ? ORDER BY habit_logs.habit_id, habit_logs.log_date',
@@ -860,7 +1006,7 @@ function userDataExport(PDO $db, int $userId, string $timezone): array
     }
 
     return [
-        'schemaVersion' => 4,
+        'schemaVersion' => 5,
         'exportedAt' => gmdate('c'),
         'timezone' => $timezone,
         'data' => $data,

@@ -87,8 +87,8 @@ final class PlanImporter
             }
 
             $taskInsert = $db->prepare(
-                'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, recurrence_rule, reminder_minutes, reminder_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, is_focus, recurrence_rule, reminder_minutes, reminder_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
             );
             $subtaskInsert = $db->prepare('INSERT INTO subtasks (task_id, title, completed, position) VALUES (?, ?, 0, ?)');
             foreach ($plan['tasks'] as $task) {
@@ -123,6 +123,7 @@ final class PlanImporter
                     $endUtc,
                     $dueUtc,
                     $task['duration'],
+                    (int) $task['focus'],
                     $task['recurrence'],
                     $start === null ? null : $task['reminderMinutes'],
                     $this->utc($reminder),
@@ -333,6 +334,7 @@ final class PlanImporter
                 'category' => $this->optionalString($item, 'category', 80),
                 'priority' => $priority,
                 'duration' => max(1, min(1440, (int) ($item['duration'] ?? 30))),
+                'focus' => (bool) ($item['focus'] ?? false),
                 'dateOffset' => max(0, min(365, (int) ($item['dateOffset'] ?? 0))),
                 'weekday' => $weekday,
                 'startTime' => $this->nullableTime($item['startTime'] ?? null, "任务“{$title}”的开始时间"),

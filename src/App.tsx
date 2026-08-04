@@ -28,11 +28,14 @@ import {
   MoreHorizontal,
   Plus,
   Pencil,
+  Pause,
+  Play,
   Repeat2,
   Search,
   Settings,
   ShieldCheck,
   Sparkles,
+  Square,
   Sun,
   Target,
   TimerReset,
@@ -95,6 +98,8 @@ type TaskDraft = Omit<Partial<Task>, 'subtasks'> & {
   title: string
   subtasks?: TaskSubtaskDraft[]
 }
+
+type FocusAction = 'start' | 'pause' | 'resume' | 'end'
 
 type EditorState =
   | { type: 'task'; taskId?: number; schedule?: boolean }
@@ -368,13 +373,14 @@ function ProgressBar({ value, color = '#496d5b' }: { value: number; color?: stri
   )
 }
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void }) {
+function Toggle({ checked, onChange, disabled = false }: { checked: boolean; onChange: () => void; disabled?: boolean }) {
   return (
     <button
       type="button"
       className={`switch ${checked ? 'is-on' : ''}`}
       aria-label={checked ? '关闭' : '开启'}
       aria-pressed={checked}
+      disabled={disabled}
       onClick={onChange}
     >
       <span />
@@ -500,6 +506,8 @@ function TaskEditor({ task, schedule = false, projects, categories, defaultRemin
   const [endTime, setEndTime] = useState(task?.endAt?.slice(11, 16) ?? task?.end ?? '10:00')
   const [dueAt, setDueAt] = useState(task?.dueAt?.slice(0, 16) ?? '')
   const [duration, setDuration] = useState(task?.duration ?? 30)
+  const [isFocus, setIsFocus] = useState(task?.isFocus ?? false)
+  const focusActive = task?.focusSession?.status === 'running' || task?.focusSession?.status === 'paused'
   const [recurrenceRule, setRecurrenceRule] = useState(task?.recurrenceRule ?? '')
   const [reminderMinutes, setReminderMinutes] = useState(task?.reminderMinutes ?? defaultReminderMinutes)
   const [subtasks, setSubtasks] = useState<Array<TaskSubtaskDraft & { clientId: string }>>(() =>
@@ -534,6 +542,7 @@ function TaskEditor({ task, schedule = false, projects, categories, defaultRemin
         categoryId: categoryId ? Number(categoryId) : null,
         priority,
         duration,
+        isFocus,
         startAt: date ? `${date}T${startTime}:00` : null,
         endAt: date ? `${date}T${endTime}:00` : null,
         dueAt: dueAt || null,
@@ -561,6 +570,10 @@ function TaskEditor({ task, schedule = false, projects, categories, defaultRemin
           <label><span>分类</span><select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">收集箱</option>{categories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
           <label><span>优先级</span><select value={priority} onChange={(event) => setPriority(event.target.value as 'low' | 'medium' | 'high')}><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
           <label><span>预计时长（分钟）</span><input type="number" min="1" max="1440" value={duration} onChange={(event) => setDuration(Number(event.target.value))} /></label>
+          <div className="focus-task-field full">
+            <div><TimerReset size={18} /><span><strong>专注任务</strong><small>{focusActive ? '当前计时结束后才能关闭。' : '开启后可在任务详情中计时，并计入今日专注时长。'}</small></span></div>
+            <Toggle checked={isFocus} disabled={focusActive} onChange={() => setIsFocus((current) => !current)} />
+          </div>
           <label><span>安排日期</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
           <div className="time-pair"><label><span>开始</span><input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} disabled={!date} /></label><label><span>结束</span><input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} disabled={!date} /></label></div>
           <label><span>截止时间</span><input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /></label>
@@ -587,7 +600,61 @@ function TaskEditor({ task, schedule = false, projects, categories, defaultRemin
   )
 }
 
-function TaskDetail({ task, onClose, onEdit, onSchedule, onDelete, onToggle, onToggleSubtask }: {
+function formatFocusTime(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds))
+  const hours = Math.floor(safeSeconds / 3600)
+  const minutes = Math.floor((safeSeconds % 3600) / 60)
+  const seconds = safeSeconds % 60
+  return [hours, minutes, seconds].map((part) => String(part).padStart(2, '0')).join(':')
+}
+
+function FocusTimer({ task, onAction }: { task: Task; onAction: (action: FocusAction) => Promise<void> }) {
+  const [now, setNow] = useState(Date.now())
+  const [busy, setBusy] = useState<FocusAction | null>(null)
+  const session = task.focusSession
+  const status = session?.status ?? 'idle'
+  const plannedSeconds = Math.max(60, session?.plannedSeconds ?? task.duration * 60)
+  const runningSeconds = status === 'running' && session?.lastResumedAt
+    ? Math.max(0, Math.floor((now - new Date(session.lastResumedAt).getTime()) / 1000))
+    : 0
+  const elapsedSeconds = (session?.elapsedSeconds ?? 0) + runningSeconds
+  const progress = Math.min(100, Math.round((elapsedSeconds / plannedSeconds) * 100))
+
+  useEffect(() => {
+    if (status !== 'running') return undefined
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [status, session?.lastResumedAt])
+
+  async function act(action: FocusAction) {
+    setBusy(action)
+    try {
+      await onAction(action)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <section className={`focus-timer focus-timer-${status}`} aria-label="专注计时">
+      <div className="focus-timer-heading">
+        <div><TimerReset size={18} /><span><strong>专注计时</strong><small>{status === 'running' ? '正在专注' : status === 'paused' ? '已暂停' : status === 'completed' ? '本次已结束' : '准备开始'}</small></span></div>
+        <strong>{progress}%</strong>
+      </div>
+      <div className="focus-timer-clock"><strong>{formatFocusTime(elapsedSeconds)}</strong><span>/ {formatFocusTime(plannedSeconds)}</span></div>
+      <ProgressBar value={progress} color={progress >= 100 ? '#a1843e' : '#496d5b'} />
+      <div className="focus-timer-actions">
+        {(status === 'idle' || status === 'completed') && <button type="button" className="primary-button" onClick={() => void act('start')} disabled={busy !== null}><Play size={16} />{status === 'completed' ? '再次专注' : '开始专注'}</button>}
+        {status === 'running' && <button type="button" className="outline-button" onClick={() => void act('pause')} disabled={busy !== null}><Pause size={16} />暂停</button>}
+        {status === 'paused' && <button type="button" className="primary-button" onClick={() => void act('resume')} disabled={busy !== null}><Play size={16} />继续专注</button>}
+        {(status === 'running' || status === 'paused') && <button type="button" className="danger-button" onClick={() => void act('end')} disabled={busy !== null}><Square size={15} />结束</button>}
+      </div>
+    </section>
+  )
+}
+
+function TaskDetail({ task, onClose, onEdit, onSchedule, onDelete, onToggle, onToggleSubtask, onFocusAction }: {
   task: Task
   onClose: () => void
   onEdit: () => void
@@ -595,6 +662,7 @@ function TaskDetail({ task, onClose, onEdit, onSchedule, onDelete, onToggle, onT
   onDelete: () => Promise<void>
   onToggle: () => void
   onToggleSubtask: (subtask: Subtask) => void
+  onFocusAction: (action: FocusAction) => Promise<void>
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -622,6 +690,8 @@ function TaskDetail({ task, onClose, onEdit, onSchedule, onDelete, onToggle, onT
           <div><FolderKanban size={17} /><span>项目</span><strong>{task.project}</strong></div>
           <div><Repeat2 size={17} /><span>重复</span><strong>{recurrenceLabel(task.recurrenceRule)}</strong></div>
         </div>
+
+        {task.isFocus && <FocusTimer task={task} onAction={onFocusAction} />}
 
         {task.notes && <section className="task-detail-section"><h3>备注</h3><p>{task.notes}</p></section>}
 
@@ -963,7 +1033,8 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
     .sort((left, right) => (taskCalendarTime(left) ?? '').localeCompare(taskCalendarTime(right) ?? ''))
   const completed = scheduled.filter((task) => task.completed).length
   const progress = Math.round((completed / Math.max(scheduled.length, 1)) * 100)
-  const focusMinutes = scheduled.reduce((sum, task) => sum + task.duration, 0)
+  const plannedMinutes = scheduled.reduce((sum, task) => sum + task.duration, 0)
+  const focusMinutes = scheduled.filter((task) => task.isFocus).reduce((sum, task) => sum + task.duration, 0)
   const nextTask = scheduled.find((task) => !task.completed)
   const todayIndex = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)).indexOf(berlinIsoDate())
   const rhythmLabel = scheduled.length === 0 ? '暂无安排' : progress >= 75 ? '很顺畅' : progress >= 30 ? '推进中' : '刚开始'
@@ -995,9 +1066,10 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
 
       <div className="today-layout">
         <div className="today-main">
-          <section className="metric-strip" aria-label="今日概览">
+          <section className="metric-strip today-metrics" aria-label="今日概览">
             <div><CheckCircle2 size={19} /><span>任务</span><strong>{completed}/{scheduled.length}</strong></div>
-            <div><Clock3 size={19} /><span>计划专注</span><strong>{Math.floor(focusMinutes / 60)}h {focusMinutes % 60}m</strong></div>
+            <div><Clock3 size={19} /><span>计划时长</span><strong>{Math.floor(plannedMinutes / 60)}h {plannedMinutes % 60}m</strong></div>
+            <div><TimerReset size={19} /><span>专注时长</span><strong>{Math.floor(focusMinutes / 60)}h {focusMinutes % 60}m</strong></div>
             <div><TrendingUp size={19} /><span>今日节奏</span><strong>{rhythmLabel}</strong></div>
           </section>
 
@@ -1015,7 +1087,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
                     <TaskCheck task={task} onToggle={toggleTask} />
                     <button type="button" className="task-copy task-open-button" onClick={() => onOpenTask(task.id)}>
                       <strong>{task.title}</strong>
-                      <span>{task.project} · {task.duration} 分钟</span>
+                      <span>{task.project} · {task.duration} 分钟{task.isFocus ? ' · 专注' : ''}</span>
                     </button>
                     <span className={`priority priority-${task.priority}`}>{priorityLabels[task.priority]}</span>
                     <button className="row-action" onClick={() => onOpenTask(task.id)} aria-label="查看任务" title="查看任务"><MoreHorizontal size={18} /></button>
@@ -1977,6 +2049,44 @@ export default function App() {
     }
   }
 
+  async function focusTask(taskId: number, action: FocusAction) {
+    const task = tasks.find((item) => item.id === taskId)
+    if (!task) return
+
+    if (!demoMode) {
+      try {
+        const updated = await api.focusTask(taskId, action)
+        setTasks((current) => current.map((item) => item.id === taskId ? updated : item))
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : '专注计时保存失败')
+      }
+      return
+    }
+
+    const timestamp = new Date().toISOString()
+    setTasks((current) => current.map((item) => {
+      if (item.id !== taskId) return item
+      const session = item.focusSession
+      const runningDelta = session?.status === 'running' && session.lastResumedAt
+        ? Math.max(0, Math.floor((Date.now() - new Date(session.lastResumedAt).getTime()) / 1000))
+        : 0
+      if (action === 'start' && (!session || session.status === 'completed')) {
+        return { ...item, focusSession: { id: Date.now(), status: 'running', plannedSeconds: item.duration * 60, elapsedSeconds: 0, startedAt: timestamp, lastResumedAt: timestamp } }
+      }
+      if (!session || session.status === 'completed') return item
+      if (action === 'pause' && session.status === 'running') {
+        return { ...item, focusSession: { ...session, status: 'paused', elapsedSeconds: session.elapsedSeconds + runningDelta, lastResumedAt: null } }
+      }
+      if (action === 'resume' && session.status === 'paused') {
+        return { ...item, focusSession: { ...session, status: 'running', lastResumedAt: timestamp } }
+      }
+      if (action === 'end') {
+        return { ...item, focusSession: { ...session, status: 'completed', elapsedSeconds: session.elapsedSeconds + runningDelta, lastResumedAt: null, endedAt: timestamp } }
+      }
+      return item
+    }))
+  }
+
   async function toggleHabit(id: number, day: number) {
     const currentHabit = habits.find((habit) => habit.id === id)
     if (!currentHabit) return
@@ -2113,6 +2223,8 @@ export default function App() {
       dueAt: draft.dueAt,
       due: draft.dueAt ? draft.dueAt.replace('T', ' ').slice(0, 16) : '待安排',
       duration: draft.duration ?? 30,
+      isFocus: draft.isFocus ?? false,
+      focusSession: existing?.focusSession ?? null,
       completed: existing?.completed ?? false,
       unscheduled: !draft.startAt,
       recurrenceRule: draft.recurrenceRule,
@@ -2243,7 +2355,7 @@ export default function App() {
         {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
-      {selectedTask && <TaskDetail task={selectedTask} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} />}
+      {selectedTask && <TaskDetail task={selectedTask} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} />}
       {editor?.type === 'task' && <TaskEditor task={editorTask} schedule={editor.schedule} projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}
       {editor?.type === 'project' && <ProjectEditor onClose={() => setEditor(null)} onSave={saveProject} />}
       {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}
