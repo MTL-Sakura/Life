@@ -23,9 +23,17 @@ final class PlanImporter
                 throw new PlanImportException('这份计划已经导入过了，请不要重复导入。', 409);
             }
 
+            $record = $db->prepare('INSERT INTO plan_imports (user_id, import_key, document_name, imported_counts) VALUES (?, ?, ?, ?)');
+            $record->execute([$userId, $plan['importKey'], $plan['name'], '{}']);
+            $importId = (int) $db->lastInsertId();
+            $itemInsert = $db->prepare('INSERT INTO plan_import_items (plan_import_id, entity_type, entity_id) VALUES (?, ?, ?)');
+
             $categoryInsert = $db->prepare('INSERT IGNORE INTO categories (user_id, name, color) VALUES (?, ?, ?)');
             foreach ($plan['categories'] as $category) {
                 $categoryInsert->execute([$userId, $category['name'], $category['color']]);
+                if ($categoryInsert->rowCount() > 0) {
+                    $itemInsert->execute([$importId, 'category', (int) $db->lastInsertId()]);
+                }
             }
 
             $categoryStatement = $db->prepare('SELECT id, name FROM categories WHERE user_id = ?');
@@ -51,6 +59,7 @@ final class PlanImporter
                     $project['currentStage'],
                 ]);
                 $projectId = (int) $db->lastInsertId();
+                $itemInsert->execute([$importId, 'project', $projectId]);
                 $projectMap[$project['key']] = $projectId;
                 foreach ($project['stages'] as $position => $stage) {
                     $stageInsert->execute([$projectId, $stage, $position]);
@@ -74,6 +83,7 @@ final class PlanImporter
                     $habit['reminderTime'],
                     (int) $habit['allowMakeup'],
                 ]);
+                $itemInsert->execute([$importId, 'habit', (int) $db->lastInsertId()]);
             }
 
             $taskInsert = $db->prepare(
@@ -85,6 +95,7 @@ final class PlanImporter
                 if ($task['category'] !== null && !isset($categoryMap[$task['category']])) {
                     $categoryInsert->execute([$userId, $task['category'], '#7a6b87']);
                     $categoryMap[$task['category']] = (int) $db->lastInsertId();
+                    $itemInsert->execute([$importId, 'category', $categoryMap[$task['category']]]);
                 }
                 $taskDate = $this->taskDate($plan['startDate'], $task);
                 $start = $task['startTime'] === null ? null : $taskDate->setTime(...$this->timeParts($task['startTime']));
@@ -117,6 +128,7 @@ final class PlanImporter
                     $this->utc($reminder),
                 ]);
                 $taskId = (int) $db->lastInsertId();
+                $itemInsert->execute([$importId, 'task', $taskId]);
                 foreach ($task['subtasks'] as $position => $subtask) {
                     $subtaskInsert->execute([$taskId, $subtask, $position]);
                 }
@@ -128,8 +140,8 @@ final class PlanImporter
                 'habits' => count($plan['habits']),
                 'tasks' => count($plan['tasks']),
             ];
-            $record = $db->prepare('INSERT INTO plan_imports (user_id, import_key, document_name, imported_counts) VALUES (?, ?, ?, ?)');
-            $record->execute([$userId, $plan['importKey'], $plan['name'], json_encode($counts, JSON_THROW_ON_ERROR)]);
+            $record = $db->prepare('UPDATE plan_imports SET imported_counts = ? WHERE id = ?');
+            $record->execute([json_encode($counts, JSON_THROW_ON_ERROR), $importId]);
             $db->commit();
             return $counts;
         } catch (Throwable $error) {
@@ -142,6 +154,62 @@ final class PlanImporter
             error_log((string) $error);
             throw new PlanImportException('计划导入失败，请检查 JSON 内容后重试。', 500);
         }
+    }
+
+    public function remove(PDO $db, int $userId, int $importId): void
+    {
+        $db->beginTransaction();
+        try {
+            $batch = $db->prepare('SELECT id FROM plan_imports WHERE id = ? AND user_id = ? FOR UPDATE');
+            $batch->execute([$importId, $userId]);
+            if (!$batch->fetchColumn()) {
+                throw new PlanImportException('找不到这次导入记录。', 404);
+            }
+
+            $items = $db->prepare('SELECT entity_type, entity_id FROM plan_import_items WHERE plan_import_id = ? ORDER BY id DESC');
+            $items->execute([$importId]);
+            $grouped = ['task' => [], 'habit' => [], 'project' => [], 'category' => []];
+            foreach ($items->fetchAll() as $item) {
+                $grouped[$item['entity_type']][] = (int) $item['entity_id'];
+            }
+
+            $this->deleteEntities($db, 'tasks', $userId, $grouped['task']);
+            $this->deleteEntities($db, 'habits', $userId, $grouped['habit']);
+            if ($grouped['project'] !== []) {
+                $placeholders = implode(', ', array_fill(0, count($grouped['project']), '?'));
+                $db->prepare("DELETE FROM projects WHERE user_id = ? AND id IN ({$placeholders}) AND NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.project_id = projects.id)")
+                    ->execute([$userId, ...$grouped['project']]);
+            }
+            if ($grouped['category'] !== []) {
+                $placeholders = implode(', ', array_fill(0, count($grouped['category']), '?'));
+                $db->prepare("DELETE FROM categories WHERE user_id = ? AND id IN ({$placeholders}) AND NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.category_id = categories.id)")
+                    ->execute([$userId, ...$grouped['category']]);
+            }
+            $db->prepare('DELETE FROM plan_imports WHERE id = ? AND user_id = ?')->execute([$importId, $userId]);
+            $db->commit();
+        } catch (Throwable $error) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            if ($error instanceof PlanImportException) {
+                throw $error;
+            }
+            error_log((string) $error);
+            throw new PlanImportException('无法撤销这次导入，请稍后重试。', 500);
+        }
+    }
+
+    private function deleteEntities(PDO $db, string $table, int $userId, array $ids): void
+    {
+        if ($ids === []) {
+            return;
+        }
+        if (!in_array($table, ['tasks', 'habits'], true)) {
+            throw new PlanImportException('无法识别需要撤销的数据类型。', 500);
+        }
+        $placeholders = implode(', ', array_fill(0, count($ids), '?'));
+        $db->prepare("DELETE FROM {$table} WHERE user_id = ? AND id IN ({$placeholders})")
+            ->execute([$userId, ...$ids]);
     }
 
     private function normalize(array $document, string $timezone): array
@@ -158,7 +226,7 @@ final class PlanImporter
             throw new PlanImportException("JSON 时区 {$documentTimezone} 与账户时区 {$timezone} 不一致。", 422);
         }
         $zone = new DateTimeZone($timezone);
-        $startDate = $this->startDate((string) ($document['startDate'] ?? 'tomorrow'), $zone);
+        $startDate = $this->startDate((string) ($document['startDate'] ?? 'today'), $zone);
         $categories = $this->normalizeCategories($this->list($document, 'categories', 30));
         $projects = $this->normalizeProjects($this->list($document, 'projects', 30));
         $projectKeys = array_fill_keys(array_column($projects, 'key'), true);
@@ -348,8 +416,11 @@ final class PlanImporter
         if ($value === 'today') {
             return $today;
         }
-        if ($value === 'tomorrow' || $value === '') {
+        if ($value === 'tomorrow') {
             return $today->modify('+1 day');
+        }
+        if ($value === '') {
+            return $today;
         }
         $date = DateTimeImmutable::createFromFormat('!Y-m-d', $value, $zone);
         if ($date === false || $date->format('Y-m-d') !== $value || $date < $today) {

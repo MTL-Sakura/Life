@@ -37,6 +37,7 @@ export type Task = {
   endAt?: string | null
   dueAt?: string | null
   recurrenceRule?: string | null
+  recurrenceSourceTaskId?: number | null
   reminderMinutes?: number | null
   completedAt?: string | null
   subtasks?: Subtask[]
@@ -174,6 +175,14 @@ export type PlanImportCounts = {
   tasks: number
 }
 
+export type PlanImportBatch = {
+  id: number
+  importKey: string
+  name: string
+  counts: PlanImportCounts
+  createdAt: string
+}
+
 export type PlanImportResult = BootstrapData & { imported: PlanImportCounts }
 
 export type BootstrapData = {
@@ -181,6 +190,7 @@ export type BootstrapData = {
   habits: Habit[]
   projects: Project[]
   categories: Category[]
+  planImports: PlanImportBatch[]
   settings: UserSettings
   review: ReviewSummary
   csrfToken: string

@@ -37,6 +37,7 @@ final class Views
             'unscheduled' => $row['status'] === 'inbox' || $row['start_at'] === null,
             'status' => $row['status'],
             'recurrenceRule' => $row['recurrence_rule'] ?? null,
+            'recurrenceSourceTaskId' => isset($row['recurrence_source_task_id']) ? (int) $row['recurrence_source_task_id'] : null,
             'reminderMinutes' => isset($row['reminder_minutes']) ? (int) $row['reminder_minutes'] : null,
             'completedAt' => $completed?->format(DATE_ATOM),
             'subtasks' => array_map(static fn (array $subtask): array => [

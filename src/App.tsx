@@ -44,7 +44,7 @@ import {
 } from 'lucide-react'
 import { api } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
-import type { AiPlan, BootstrapData, Category, Habit, PageKey, PlanImportCounts, PlanImportDocument, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BootstrapData, Category, Habit, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
   { key: 'today' as const, label: '今日', icon: LayoutDashboard },
@@ -271,6 +271,61 @@ function taskCalendarDate(task: Task) {
 
 function taskCalendarTime(task: Task) {
   return task.startAt?.slice(11, 16) ?? task.start ?? null
+}
+
+type CalendarOccurrence = {
+  key: string
+  task: Task
+  date: string
+  time: string | null
+  endTime: string | null
+  projected: boolean
+}
+
+function isoDateDifference(left: string, right: string) {
+  const toUtc = (value: string) => {
+    const [year, month, day] = value.split('-').map(Number)
+    return Date.UTC(year, month - 1, day, 12)
+  }
+  return Math.round((toUtc(right) - toUtc(left)) / 86_400_000)
+}
+
+function taskRepeatsOnDate(task: Task, date: string) {
+  const startDate = taskCalendarDate(task)
+  if (!startDate || !task.recurrenceRule || date <= startDate) return false
+  const difference = isoDateDifference(startDate, date)
+  if (task.recurrenceRule.startsWith('FREQ=DAILY')) return difference > 0
+  if (task.recurrenceRule.startsWith('FREQ=WEEKLY')) return difference > 0 && difference % 7 === 0
+  if (task.recurrenceRule.startsWith('FREQ=MONTHLY')) return date.slice(8, 10) === startDate.slice(8, 10)
+  return false
+}
+
+function calendarOccurrences(tasks: Task[], dates: string[]) {
+  const scheduledTasks = tasks.filter((task) => !task.unscheduled && taskCalendarDate(task))
+  const occurrences: CalendarOccurrence[] = scheduledTasks.map((task) => ({
+    key: `task-${task.id}`,
+    task,
+    date: taskCalendarDate(task) as string,
+    time: taskCalendarTime(task),
+    endTime: task.endAt?.slice(11, 16) ?? task.end ?? null,
+    projected: false,
+  }))
+  const parentIds = new Set(tasks.map((task) => task.recurrenceSourceTaskId).filter((id): id is number => typeof id === 'number'))
+  const leaves = scheduledTasks.filter((task) => task.recurrenceRule && !parentIds.has(task.id))
+  for (const task of leaves) {
+    for (const date of dates) {
+      if (!taskRepeatsOnDate(task, date)) continue
+      occurrences.push({
+        key: `repeat-${task.id}-${date}`,
+        task,
+        date,
+        time: taskCalendarTime(task),
+        endTime: task.endAt?.slice(11, 16) ?? task.end ?? null,
+        projected: true,
+      })
+    }
+  }
+  return occurrences
 }
 
 function taskReviewDate(task: Task) {
@@ -1101,9 +1156,13 @@ function CalendarPage({ tasks, onNewTask, onOpenTask }: { tasks: Task[]; onNewTa
   const dates = currentWeekDates()
   const hours = ['09:00', '11:00', '13:00', '15:00', '17:00', '19:00']
   const todayIndex = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)).indexOf(berlinIsoDate())
-  const scheduledTasks = tasks.filter((task) => !task.unscheduled && taskCalendarDate(task))
-  const scheduledDates = new Set(scheduledTasks.map(taskCalendarDate).filter(Boolean))
   const monthCells = currentMonthCells()
+  const visibleDates = Array.from(new Set([
+    ...Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)),
+    ...monthCells.flatMap((cell) => cell.date ? [cell.date] : []),
+  ]))
+  const occurrences = calendarOccurrences(tasks, visibleDates)
+  const scheduledDates = new Set(occurrences.map((occurrence) => occurrence.date))
 
   return (
     <div className="page-content">
@@ -1144,13 +1203,13 @@ function CalendarPage({ tasks, onNewTask, onOpenTask }: { tasks: Task[]; onNewTa
                     const startHour = Number(hour.slice(0, 2))
                     const endHour = hourIndex === hours.length - 1 ? 24 : Number(hours[hourIndex + 1].slice(0, 2))
                     const date = currentWeekDateIso(dayIndex)
-                    const cellTasks = scheduledTasks.filter((task) => {
-                      const time = taskCalendarTime(task)
+                    const cellTasks = occurrences.filter((occurrence) => {
+                      const time = occurrence.time
                       const taskHour = time ? Number(time.slice(0, 2)) : -1
-                      return taskCalendarDate(task) === date && taskHour >= startHour && taskHour < endHour
+                      return occurrence.date === date && taskHour >= startHour && taskHour < endHour
                     })
-                    return cellTasks.length > 0 ? <div className="calendar-event-stack">{cellTasks.map((task) => (
-                      <button type="button" className="calendar-event" onClick={() => onOpenTask(task.id)} style={{ '--event-color': task.color } as React.CSSProperties} key={task.id}><strong>{task.title}</strong><span>{taskCalendarTime(task)}–{task.endAt?.slice(11, 16) ?? task.end ?? '待定'}</span></button>
+                    return cellTasks.length > 0 ? <div className="calendar-event-stack">{cellTasks.map((occurrence) => (
+                      <button type="button" className={`calendar-event ${occurrence.projected ? 'is-projected' : ''}`} onClick={() => onOpenTask(occurrence.task.id)} style={{ '--event-color': occurrence.task.color } as React.CSSProperties} key={occurrence.key}><strong>{occurrence.task.title}</strong><span>{occurrence.time}–{occurrence.endTime ?? '待定'}</span></button>
                     ))}</div> : null
                   })()}
                 </div>
@@ -1350,16 +1409,18 @@ function ReviewPage({ summary, tasks }: { summary: ReviewSummary; tasks: Task[] 
   )
 }
 
-function SettingsPage({ settings: initialSettings, activeSection, dataCounts, onSectionChange, onSave, onTestMail, onChangePassword, onExportData, onImportPlan, onLogout }: {
+function SettingsPage({ settings: initialSettings, activeSection, dataCounts, planImports, onSectionChange, onSave, onTestMail, onChangePassword, onExportData, onImportPlan, onDeletePlanImport, onLogout }: {
   settings: UserSettings
   activeSection: SettingsSectionKey
   dataCounts: { tasks: number; projects: number; habits: number; categories: number }
+  planImports: PlanImportBatch[]
   onSectionChange: (section: SettingsSectionKey) => void
   onSave: (settings: UserSettings) => Promise<void>
   onTestMail: () => Promise<void>
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>
   onExportData: () => Promise<void>
   onImportPlan: (plan: PlanImportDocument) => Promise<PlanImportCounts>
+  onDeletePlanImport: (id: number) => Promise<void>
   onLogout: () => Promise<void>
 }) {
   const [settings, setSettings] = useState(initialSettings)
@@ -1376,6 +1437,7 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, on
   const [importPreview, setImportPreview] = useState<PlanImportDocument | null>(null)
   const [importError, setImportError] = useState('')
   const [importing, setImporting] = useState(false)
+  const [deletingImportId, setDeletingImportId] = useState<number | null>(null)
 
   useEffect(() => setSettings(initialSettings), [initialSettings])
 
@@ -1452,6 +1514,22 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, on
     previewImport(text)
   }
 
+  async function loadExamplePlan() {
+    setImportError('')
+    try {
+      const examplePath = import.meta.env.DEV
+        ? '/public/examples/sakura-daily-routine-v2.json'
+        : '/examples/sakura-daily-routine-v2.json'
+      const response = await fetch(examplePath, { headers: { Accept: 'application/json' } })
+      if (!response.ok) throw new Error('无法读取推荐日程。')
+      const text = await response.text()
+      setImportText(text)
+      previewImport(text)
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : '无法读取推荐日程。')
+    }
+  }
+
   async function importPlan() {
     if (!importPreview) return
     setImporting(true)
@@ -1464,6 +1542,19 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, on
       setImportError(error instanceof Error ? error.message : '计划导入失败。')
     } finally {
       setImporting(false)
+    }
+  }
+
+  async function deletePlanImport(batch: PlanImportBatch) {
+    if (!window.confirm(`撤销“${batch.name}”并删除这次导入创建的数据？`)) return
+    setDeletingImportId(batch.id)
+    setImportError('')
+    try {
+      await onDeletePlanImport(batch.id)
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : '撤销导入失败。')
+    } finally {
+      setDeletingImportId(null)
     }
   }
 
@@ -1546,6 +1637,7 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, on
               />
               <div className="plan-import-actions">
                 <label className="outline-button plan-file-button"><Upload size={16} /> 选择 JSON 文件<input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadImportFile(file); event.currentTarget.value = '' }} /></label>
+                <button type="button" className="outline-button" onClick={() => void loadExamplePlan()}><BookOpen size={16} /> 载入推荐日程</button>
                 <button type="button" className="outline-button" onClick={() => previewImport()} disabled={!importText.trim()}>检查内容</button>
               </div>
               {importError && <p className="form-error">{importError}</p>}
@@ -1558,6 +1650,16 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, on
                     <span><strong>{importPreview.tasks?.length ?? 0}</strong> 任务</span>
                   </div>
                   <button type="button" className="primary-button" onClick={() => void importPlan()} disabled={importing}>{importing ? '导入中…' : '确认导入'}</button>
+                </div>
+              )}
+              {planImports.length > 0 && (
+                <div className="plan-import-history">
+                  {planImports.map((batch) => (
+                    <div className="plan-import-history-row" key={batch.id}>
+                      <div><strong>{batch.name}</strong><span>{taskMoment(batch.createdAt)} · {batch.counts.projects ?? 0} 项目 · {batch.counts.habits ?? 0} 习惯 · {batch.counts.tasks ?? 0} 任务</span></div>
+                      <button type="button" className="danger-button" onClick={() => void deletePlanImport(batch)} disabled={deletingImportId !== null}><Trash2 size={15} />{deletingImportId === batch.id ? '撤销中…' : '撤销导入'}</button>
+                    </div>
+                  ))}
                 </div>
               )}
             </section>
@@ -1602,6 +1704,7 @@ export default function App() {
     { id: 4, name: '成长', color: '#a1843e' },
     { id: 5, name: '生活', color: '#7a6b87' },
   ])
+  const [planImports, setPlanImports] = useState<PlanImportBatch[]>([])
   const [settings, setSettings] = useState(defaultSettings)
   const [review, setReview] = useState(defaultReview)
   const [editor, setEditor] = useState<EditorState>(null)
@@ -1666,6 +1769,7 @@ export default function App() {
     setHabits(data.habits)
     setProjectItems(data.projects)
     setCategories(data.categories)
+    setPlanImports(data.planImports ?? [])
     setSettings(data.settings)
     setReview(data.review)
   }
@@ -1967,6 +2071,13 @@ export default function App() {
     return counts
   }
 
+  async function deletePlanImport(id: number) {
+    if (demoMode) throw new Error('演示模式没有可撤销的真实导入。')
+    const result = await api.deletePlanImport(id)
+    applyBootstrap(result)
+    showToast('这次导入的数据已删除')
+  }
+
   async function saveTask(draft: TaskDraft) {
     if (!demoMode) {
       if (draft.id) {
@@ -2129,7 +2240,7 @@ export default function App() {
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
         {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} />}
         {page === 'review' && <ReviewPage summary={review} tasks={tasks} />}
-        {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onImportPlan={importPlan} onLogout={logout} />}
+        {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
       {selectedTask && <TaskDetail task={selectedTask} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} />}

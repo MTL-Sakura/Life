@@ -351,6 +351,20 @@ switch ($action) {
             Http::json(['error' => $error->getMessage()], $error->httpStatus());
         }
 
+    case 'data.import.delete':
+        Http::requireMethod('DELETE', 'POST');
+        $input = Http::input();
+        $importId = (int) ($input['id'] ?? 0);
+        if ($importId < 1) {
+            Http::json(['error' => '导入记录编号不正确。'], 422);
+        }
+        try {
+            (new PlanImporter())->remove($db, $userId, $importId);
+            Http::json(bootstrapData($db, $userId, $timezone));
+        } catch (PlanImportException $error) {
+            Http::json(['error' => $error->getMessage()], $error->httpStatus());
+        }
+
     case 'settings.update':
         Http::requireMethod('PATCH', 'POST');
         $input = Http::input();
@@ -420,6 +434,7 @@ switch ($action) {
 
 function bootstrapData(PDO $db, int $userId, string $timezone): array
 {
+    ensureRecurringTaskContinuity($db, $userId, $timezone);
     $tasksStatement = $db->prepare(
         'SELECT tasks.*, projects.title AS project_title, categories.name AS category_name, categories.color AS category_color
          FROM tasks
@@ -501,10 +516,59 @@ function bootstrapData(PDO $db, int $userId, string $timezone): array
         'habits' => $habits,
         'projects' => $projects,
         'categories' => $categories,
+        'planImports' => planImports($db, $userId),
         'settings' => settingsView($settingsRow),
         'review' => reviewData($db, $userId, $weekStartUtc, $weekEndUtc),
         'csrfToken' => Auth::csrfToken(),
     ];
+}
+
+function ensureRecurringTaskContinuity(PDO $db, int $userId, string $timezone): void
+{
+    $cutoff = (new DateTimeImmutable('tomorrow', new DateTimeZone($timezone)))
+        ->setTimezone(new DateTimeZone('UTC'))
+        ->format('Y-m-d H:i:s');
+    $leafStatement = $db->prepare(
+        'SELECT task.* FROM tasks AS task
+         LEFT JOIN tasks AS child ON child.recurrence_source_task_id = task.id
+         WHERE task.user_id = ?
+           AND task.status != "cancelled"
+           AND task.recurrence_rule IS NOT NULL
+           AND task.recurrence_rule != ""
+           AND child.id IS NULL
+           AND COALESCE(task.start_at, task.due_at, task.end_at) < ?
+         ORDER BY COALESCE(task.start_at, task.due_at, task.end_at)
+         LIMIT 200'
+    );
+
+    for ($round = 0; $round < 370; $round++) {
+        $leafStatement->execute([$userId, $cutoff]);
+        $leaves = $leafStatement->fetchAll();
+        if ($leaves === []) {
+            return;
+        }
+        foreach ($leaves as $leaf) {
+            createNextRecurringTask($db, $leaf);
+        }
+    }
+
+    throw new RuntimeException('Recurring task continuity limit exceeded.');
+}
+
+function planImports(PDO $db, int $userId): array
+{
+    $statement = $db->prepare('SELECT id, import_key, document_name, imported_counts, created_at FROM plan_imports WHERE user_id = ? ORDER BY created_at DESC, id DESC');
+    $statement->execute([$userId]);
+    return array_map(static function (array $row): array {
+        $counts = json_decode((string) $row['imported_counts'], true);
+        return [
+            'id' => (int) $row['id'],
+            'importKey' => $row['import_key'],
+            'name' => $row['document_name'],
+            'counts' => is_array($counts) ? $counts : [],
+            'createdAt' => (new DateTimeImmutable((string) $row['created_at'], new DateTimeZone('UTC')))->format(DATE_ATOM),
+        ];
+    }, $statement->fetchAll());
 }
 
 function findTask(PDO $db, int $taskId, int $userId, string $timezone): array
@@ -643,6 +707,11 @@ function createNextRecurringTask(PDO $db, array $task): ?int
     $nextTaskId = (int) $db->lastInsertId();
     $copy = $db->prepare('INSERT INTO subtasks (task_id, title, completed, position) SELECT ?, title, 0, position FROM subtasks WHERE task_id = ?');
     $copy->execute([$nextTaskId, (int) $task['id']]);
+    $track = $db->prepare(
+        'INSERT IGNORE INTO plan_import_items (plan_import_id, entity_type, entity_id)
+         SELECT plan_import_id, "task", ? FROM plan_import_items WHERE entity_type = "task" AND entity_id = ?'
+    );
+    $track->execute([$nextTaskId, (int) $task['id']]);
     return $nextTaskId;
 }
 
@@ -778,7 +847,8 @@ function userDataExport(PDO $db, int $userId, string $timezone): array
         'habitLogs' => 'SELECT habit_logs.* FROM habit_logs INNER JOIN habits ON habits.id = habit_logs.habit_id WHERE habits.user_id = ? ORDER BY habit_logs.habit_id, habit_logs.log_date',
         'notifications' => 'SELECT type, reference_key, sent_at, created_at FROM notification_logs WHERE user_id = ? ORDER BY id',
         'aiPlans' => 'SELECT id, status, model, source_task_ids, target_start_date, target_end_date, proposal_json, error_message, input_tokens, output_tokens, expires_at, applied_at, created_at, updated_at FROM ai_plans WHERE user_id = ? ORDER BY id',
-        'planImports' => 'SELECT import_key, document_name, imported_counts, created_at FROM plan_imports WHERE user_id = ? ORDER BY id',
+        'planImports' => 'SELECT id, import_key, document_name, imported_counts, created_at FROM plan_imports WHERE user_id = ? ORDER BY id',
+        'planImportItems' => 'SELECT plan_import_items.plan_import_id, plan_import_items.entity_type, plan_import_items.entity_id, plan_import_items.created_at FROM plan_import_items INNER JOIN plan_imports ON plan_imports.id = plan_import_items.plan_import_id WHERE plan_imports.user_id = ? ORDER BY plan_import_items.id',
     ];
 
     $data = [];

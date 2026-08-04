@@ -101,6 +101,10 @@ export const api = {
     return request<PlanImportResult>('data.import', { method: 'POST', body: { plan } })
   },
 
+  async deletePlanImport(id: number): Promise<BootstrapData> {
+    return request<BootstrapData>('data.import.delete', { method: 'DELETE', body: { id } })
+  },
+
   async testMail(): Promise<void> {
     await request('mail.test', { method: 'POST' })
   },

@@ -2199,6 +2199,39 @@ p {
   font-size: 13px;
 }
 
+.plan-import-history {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.plan-import-history-row {
+  min-height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.plan-import-history-row > div {
+  min-width: 0;
+}
+
+.plan-import-history-row strong,
+.plan-import-history-row span {
+  display: block;
+}
+
+.plan-import-history-row strong {
+  font-size: 12px;
+}
+
+.plan-import-history-row span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
 @media (max-width: 680px) {
   .plan-import-preview {
     grid-template-columns: 1fr;
@@ -2206,6 +2239,12 @@ p {
 
   .plan-import-preview > .primary-button {
     width: 100%;
+  }
+
+  .plan-import-history-row {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 13px 0;
   }
 }
 

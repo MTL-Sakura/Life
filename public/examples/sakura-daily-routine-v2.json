@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "importKey": "sakura-daily-routine-v1",
+  "importKey": "sakura-daily-routine-v2",
   "name": "早起、健身、学习与游戏日常",
-  "startDate": "tomorrow",
+  "startDate": "today",
   "timezone": "Europe/Berlin",
   "categories": [
     { "name": "学习", "color": "#58748f" },
@@ -44,11 +44,11 @@
     },
     {
       "name": "无氧健身",
-      "description": "每周一、三、五、六出门进行无氧训练。",
+      "description": "每天出门进行无氧训练。",
       "color": "#496d5b",
-      "frequency": "custom",
-      "targetCount": 4,
-      "scheduleDays": [1, 3, 5, 6],
+      "frequency": "daily",
+      "targetCount": 1,
+      "scheduleDays": [1, 2, 3, 4, 5, 6, 7],
       "reminderTime": "09:40",
       "allowMakeup": true
     },
@@ -96,50 +96,13 @@
       "subtasks": ["起床并离开床铺", "吃早餐"]
     },
     {
-      "title": "无氧健身 · 周一",
+      "title": "无氧健身",
       "notes": "包含出门、训练和返回时间。",
       "category": "健康",
       "priority": "high",
       "duration": 90,
-      "weekday": 1,
       "startTime": "10:00",
-      "recurrence": "weekly",
-      "reminderMinutes": 20,
-      "subtasks": []
-    },
-    {
-      "title": "无氧健身 · 周三",
-      "notes": "包含出门、训练和返回时间。",
-      "category": "健康",
-      "priority": "high",
-      "duration": 90,
-      "weekday": 3,
-      "startTime": "10:00",
-      "recurrence": "weekly",
-      "reminderMinutes": 20,
-      "subtasks": []
-    },
-    {
-      "title": "无氧健身 · 周五",
-      "notes": "包含出门、训练和返回时间。",
-      "category": "健康",
-      "priority": "high",
-      "duration": 90,
-      "weekday": 5,
-      "startTime": "10:00",
-      "recurrence": "weekly",
-      "reminderMinutes": 20,
-      "subtasks": []
-    },
-    {
-      "title": "无氧健身 · 周六",
-      "notes": "包含出门、训练和返回时间。",
-      "category": "健康",
-      "priority": "high",
-      "duration": 90,
-      "weekday": 6,
-      "startTime": "10:00",
-      "recurrence": "weekly",
+      "recurrence": "daily",
       "reminderMinutes": 20,
       "subtasks": []
     },
