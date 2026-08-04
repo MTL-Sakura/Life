@@ -1,0 +1,20 @@
+{
+  "name": "mtl-sakura/life-dashboard",
+  "description": "Single-user life dashboard PHP API",
+  "type": "project",
+  "require": {
+    "php": ">=8.1",
+    "ext-pdo": "*",
+    "ext-json": "*",
+    "phpmailer/phpmailer": "^6.10"
+  },
+  "autoload": {
+    "psr-4": {
+      "Life\\": "server/src/"
+    }
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "sort-packages": true
+  }
+}

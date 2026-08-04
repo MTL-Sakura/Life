@@ -1,0 +1,26 @@
+{
+  "name": "life-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint:php": "node scripts/lint-php.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^4.6.0",
+    "php-parser": "^3.7.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.6"
+  },
+  "packageManager": "pnpm@10.14.0"
+}
