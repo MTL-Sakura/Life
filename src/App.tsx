@@ -100,6 +100,34 @@ type TaskDraft = Omit<Partial<Task>, 'subtasks'> & {
 }
 
 type FocusAction = 'start' | 'pause' | 'resume' | 'end'
+type IdlePermissionState = 'unknown' | 'granted' | 'denied' | 'unsupported'
+
+type FocusIdleWarning = {
+  taskId: number
+  taskTitle: string
+  detectedAt: number
+  deadlineAt: number
+}
+
+interface IdleDetectorInstance extends EventTarget {
+  userState: 'active' | 'idle' | null
+  screenState: 'locked' | 'unlocked' | null
+  start: (options: { threshold: number; signal: AbortSignal }) => Promise<void>
+}
+
+interface IdleDetectorConstructor {
+  new (): IdleDetectorInstance
+  requestPermission: () => Promise<'granted' | 'denied'>
+}
+
+declare global {
+  interface Window {
+    IdleDetector?: IdleDetectorConstructor
+  }
+}
+
+const focusIdleThresholdSeconds = 10 * 60
+const focusIdleConfirmationSeconds = 60
 
 type EditorState =
   | { type: 'task'; taskId?: number; schedule?: boolean }
@@ -608,7 +636,7 @@ function formatFocusTime(totalSeconds: number) {
   return [hours, minutes, seconds].map((part) => String(part).padStart(2, '0')).join(':')
 }
 
-function FocusTimer({ task, onAction }: { task: Task; onAction: (action: FocusAction) => Promise<void> }) {
+function FocusTimer({ task, idlePermission, onAction }: { task: Task; idlePermission: IdlePermissionState; onAction: (action: FocusAction) => Promise<boolean> }) {
   const [now, setNow] = useState(Date.now())
   const [busy, setBusy] = useState<FocusAction | null>(null)
   const session = task.focusSession
@@ -650,19 +678,55 @@ function FocusTimer({ task, onAction }: { task: Task; onAction: (action: FocusAc
         {status === 'paused' && <button type="button" className="primary-button" onClick={() => void act('resume')} disabled={busy !== null}><Play size={16} />继续专注</button>}
         {(status === 'running' || status === 'paused') && <button type="button" className="danger-button" onClick={() => void act('end')} disabled={busy !== null}><Square size={15} />结束</button>}
       </div>
+      <div className={`focus-idle-status focus-idle-${idlePermission}`}>
+        <ShieldCheck size={14} />
+        <span>{idlePermission === 'granted'
+          ? '离开检测已开启：空闲 10 分钟后会询问'
+          : idlePermission === 'denied'
+            ? '未获得离开检测权限，请手动暂停'
+            : idlePermission === 'unsupported'
+              ? '当前浏览器不支持系统离开检测'
+              : '首次开始专注时会申请离开检测权限'}</span>
+      </div>
     </section>
   )
 }
 
-function TaskDetail({ task, onClose, onEdit, onSchedule, onDelete, onToggle, onToggleSubtask, onFocusAction }: {
+function FocusIdleWarningDialog({ warning, secondsLeft, onContinue, onPause }: {
+  warning: FocusIdleWarning
+  secondsLeft: number
+  onContinue: () => void
+  onPause: () => void
+}) {
+  return (
+    <div className="idle-warning-backdrop">
+      <section className="idle-warning-dialog" role="alertdialog" aria-modal="true" aria-label="确认是否仍在专注">
+        <span className="idle-warning-icon"><AlarmClock size={24} /></span>
+        <p className="eyebrow">PRESENCE CHECK</p>
+        <h2>还在专注吗？</h2>
+        <p>“{warning.taskTitle}”已经连续 10 分钟没有检测到电脑操作。</p>
+        <strong className="idle-warning-countdown">{secondsLeft}</strong>
+        <span className="idle-warning-caption">秒后自动暂停，并扣除离开时间</span>
+        <ProgressBar value={Math.round((secondsLeft / focusIdleConfirmationSeconds) * 100)} color="#a1843e" />
+        <div className="idle-warning-actions">
+          <button type="button" className="outline-button" onClick={onPause}><Pause size={16} />立即暂停</button>
+          <button type="button" className="primary-button" onClick={onContinue}><Check size={16} />我还在，继续专注</button>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelete, onToggle, onToggleSubtask, onFocusAction }: {
   task: Task
+  idlePermission: IdlePermissionState
   onClose: () => void
   onEdit: () => void
   onSchedule: () => void
   onDelete: () => Promise<void>
   onToggle: () => void
   onToggleSubtask: (subtask: Subtask) => void
-  onFocusAction: (action: FocusAction) => Promise<void>
+  onFocusAction: (action: FocusAction) => Promise<boolean>
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -691,7 +755,7 @@ function TaskDetail({ task, onClose, onEdit, onSchedule, onDelete, onToggle, onT
           <div><Repeat2 size={17} /><span>重复</span><strong>{recurrenceLabel(task.recurrenceRule)}</strong></div>
         </div>
 
-        {task.isFocus && <FocusTimer task={task} onAction={onFocusAction} />}
+        {task.isFocus && <FocusTimer task={task} idlePermission={idlePermission} onAction={onFocusAction} />}
 
         {task.notes && <section className="task-detail-section"><h3>备注</h3><p>{task.notes}</p></section>}
 
@@ -1789,9 +1853,17 @@ export default function App() {
   const [aiPlanLoading, setAiPlanLoading] = useState(false)
   const [aiPlanApplying, setAiPlanApplying] = useState(false)
   const [aiPlanError, setAiPlanError] = useState('')
+  const [idlePermission, setIdlePermission] = useState<IdlePermissionState>(() => window.IdleDetector ? 'unknown' : 'unsupported')
+  const [idleWarning, setIdleWarning] = useState<FocusIdleWarning | null>(null)
+  const [idleClock, setIdleClock] = useState(Date.now())
+  const idleWarningRef = useRef<FocusIdleWarning | null>(null)
+  const idlePauseInFlight = useRef(false)
+  const idleNotification = useRef<Notification | null>(null)
+  const baseDocumentTitle = useRef(document.title)
 
   const inboxCount = useMemo(() => tasks.filter((task) => !task.completed && task.unscheduled).length, [tasks])
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId), [selectedTaskId, tasks])
+  const runningFocusTask = useMemo(() => tasks.find((task) => task.focusSession?.status === 'running') ?? null, [tasks])
   const editorTask = editor?.type === 'task' && editor.taskId
     ? tasks.find((task) => task.id === editor.taskId)
     : undefined
@@ -2049,18 +2121,44 @@ export default function App() {
     }
   }
 
-  async function focusTask(taskId: number, action: FocusAction) {
+  async function prepareFocusPresenceDetection() {
+    if (!window.IdleDetector) {
+      setIdlePermission('unsupported')
+      return
+    }
+    if (idlePermission === 'granted' || idlePermission === 'denied') return
+    try {
+      const permission = await window.IdleDetector.requestPermission()
+      setIdlePermission(permission)
+      if (permission === 'granted' && 'Notification' in window && Notification.permission === 'default') {
+        try {
+          await Notification.requestPermission()
+        } catch {
+          // Native notifications are optional; the in-app confirmation still works.
+        }
+      }
+    } catch {
+      setIdlePermission('denied')
+    }
+  }
+
+  async function focusTask(taskId: number, action: FocusAction, idleSeconds = 0): Promise<boolean> {
     const task = tasks.find((item) => item.id === taskId)
-    if (!task) return
+    if (!task) return false
+
+    if (action === 'start' || action === 'resume') {
+      await prepareFocusPresenceDetection()
+    }
 
     if (!demoMode) {
       try {
-        const updated = await api.focusTask(taskId, action)
+        const updated = await api.focusTask(taskId, action, idleSeconds)
         setTasks((current) => current.map((item) => item.id === taskId ? updated : item))
+        return true
       } catch (error) {
         showToast(error instanceof Error ? error.message : '专注计时保存失败')
+        return false
       }
-      return
     }
 
     const timestamp = new Date().toISOString()
@@ -2075,7 +2173,7 @@ export default function App() {
       }
       if (!session || session.status === 'completed') return item
       if (action === 'pause' && session.status === 'running') {
-        return { ...item, focusSession: { ...session, status: 'paused', elapsedSeconds: session.elapsedSeconds + runningDelta, lastResumedAt: null } }
+        return { ...item, focusSession: { ...session, status: 'paused', elapsedSeconds: Math.max(0, session.elapsedSeconds + runningDelta - idleSeconds), lastResumedAt: null } }
       }
       if (action === 'resume' && session.status === 'paused') {
         return { ...item, focusSession: { ...session, status: 'running', lastResumedAt: timestamp } }
@@ -2085,7 +2183,99 @@ export default function App() {
       }
       return item
     }))
+    return true
   }
+
+  function dismissIdleWarning() {
+    idleWarningRef.current = null
+    setIdleWarning(null)
+    idleNotification.current?.close()
+    idleNotification.current = null
+    document.title = baseDocumentTitle.current
+  }
+
+  function presentIdleWarning(task: Task) {
+    if (idleWarningRef.current) return
+    const detectedAt = Date.now()
+    const warning = {
+      taskId: task.id,
+      taskTitle: task.title,
+      detectedAt,
+      deadlineAt: detectedAt + focusIdleConfirmationSeconds * 1000,
+    }
+    idleWarningRef.current = warning
+    setIdleClock(detectedAt)
+    setIdleWarning(warning)
+    document.title = '还在专注吗？'
+
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const notification = new Notification('还在专注吗？', {
+        body: '60 秒内回到人生看板确认，否则会自动暂停并扣除离开时间。',
+        tag: 'life-focus-idle',
+        requireInteraction: true,
+      })
+      notification.onclick = () => {
+        window.focus()
+        notification.close()
+      }
+      idleNotification.current = notification
+    }
+  }
+
+  async function pauseForIdle(warning: FocusIdleWarning | null, locked = false) {
+    const task = runningFocusTask
+    if (!task || idlePauseInFlight.current) return
+    idlePauseInFlight.current = true
+    const idleSeconds = warning
+      ? Math.min(
+          focusIdleThresholdSeconds + focusIdleConfirmationSeconds,
+          focusIdleThresholdSeconds + Math.max(0, Math.floor((Date.now() - warning.detectedAt) / 1000)),
+        )
+      : 0
+    const paused = await focusTask(task.id, 'pause', idleSeconds)
+    if (paused) {
+      showToast(locked ? '屏幕已锁定，专注计时已自动暂停' : '检测到离开，专注计时已自动暂停')
+    }
+    dismissIdleWarning()
+    idlePauseInFlight.current = false
+  }
+
+  useEffect(() => {
+    if (!idleWarning) return undefined
+    const updateClock = window.setInterval(() => setIdleClock(Date.now()), 1000)
+    const autoPause = window.setTimeout(() => void pauseForIdle(idleWarning), Math.max(0, idleWarning.deadlineAt - Date.now()))
+    return () => {
+      window.clearInterval(updateClock)
+      window.clearTimeout(autoPause)
+    }
+  }, [idleWarning?.deadlineAt])
+
+  useEffect(() => {
+    if (!runningFocusTask || idlePermission !== 'granted' || !window.IdleDetector) return undefined
+    const controller = new AbortController()
+    const detector = new window.IdleDetector()
+    const handleIdleChange = () => {
+      if (detector.screenState === 'locked') {
+        void pauseForIdle(idleWarningRef.current, true)
+        return
+      }
+      if (detector.userState === 'idle') {
+        presentIdleWarning(runningFocusTask)
+      } else if (detector.userState === 'active' && idleWarningRef.current?.taskId === runningFocusTask.id) {
+        dismissIdleWarning()
+      }
+    }
+    detector.addEventListener('change', handleIdleChange)
+    void detector.start({ threshold: focusIdleThresholdSeconds * 1000, signal: controller.signal })
+      .catch(() => setIdlePermission('denied'))
+    return () => {
+      controller.abort()
+      detector.removeEventListener('change', handleIdleChange)
+      if (idleWarningRef.current?.taskId === runningFocusTask.id) {
+        dismissIdleWarning()
+      }
+    }
+  }, [runningFocusTask?.id, idlePermission])
 
   async function toggleHabit(id: number, day: number) {
     const currentHabit = habits.find((habit) => habit.id === id)
@@ -2330,6 +2520,10 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  const idleSecondsLeft = idleWarning
+    ? Math.max(0, Math.ceil((idleWarning.deadlineAt - idleClock) / 1000))
+    : 0
+
   if (loggedIn === null) {
     return <main className="loading-shell"><div className="brand-mark large"><span>行</span></div><span>正在打开人生看板…</span></main>
   }
@@ -2355,12 +2549,13 @@ export default function App() {
         {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
-      {selectedTask && <TaskDetail task={selectedTask} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} />}
+      {selectedTask && <TaskDetail task={selectedTask} idlePermission={idlePermission} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} />}
       {editor?.type === 'task' && <TaskEditor task={editorTask} schedule={editor.schedule} projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}
       {editor?.type === 'project' && <ProjectEditor onClose={() => setEditor(null)} onSave={saveProject} />}
       {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}
       {aiPlannerOpen && <AiPlannerModal plan={aiPlan} loading={aiPlanLoading} applying={aiPlanApplying} error={aiPlanError} onClose={() => setAiPlannerOpen(false)} onRetry={() => void generateAiPlan()} onApply={() => void applyAiPlan()} />}
       {toast && <div className="toast"><CheckCircle2 size={17} />{toast}</div>}
+      {idleWarning && <FocusIdleWarningDialog warning={idleWarning} secondsLeft={idleSecondsLeft} onContinue={dismissIdleWarning} onPause={() => void pauseForIdle(idleWarning)} />}
     </div>
   )
 }

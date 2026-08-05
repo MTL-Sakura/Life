@@ -255,7 +255,10 @@ switch ($action) {
             Http::json(['error' => '请先把这个任务设为专注任务。'], 422);
         }
         $focusAction = substr($action, strlen('focus.'));
-        $focusError = updateFocusSession($db, $task, $userId, $focusAction);
+        $idleSeconds = $focusAction === 'pause'
+            ? max(0, min(660, (int) ($input['idleSeconds'] ?? 0)))
+            : 0;
+        $focusError = updateFocusSession($db, $task, $userId, $focusAction, $idleSeconds);
         if ($focusError !== null) {
             Http::json(['error' => $focusError['message']], $focusError['status']);
         }
@@ -646,7 +649,7 @@ function focusSessionMap(PDO $db, array $taskIds): array
     return $map;
 }
 
-function updateFocusSession(PDO $db, array $task, int $userId, string $action): ?array
+function updateFocusSession(PDO $db, array $task, int $userId, string $action, int $idleSeconds = 0): ?array
 {
     $db->beginTransaction();
     try {
@@ -687,7 +690,7 @@ function updateFocusSession(PDO $db, array $task, int $userId, string $action): 
                 $db->commit();
                 return ['message' => '专注计时已经暂停。', 'status' => 409];
             }
-            $elapsed = runningFocusElapsed($session);
+            $elapsed = max(0, runningFocusElapsed($session) - $idleSeconds);
             $db->prepare("UPDATE focus_sessions SET status = 'paused', elapsed_seconds = ?, last_resumed_at = NULL WHERE id = ?")
                 ->execute([$elapsed, (int) $session['id']]);
         } elseif ($action === 'resume') {

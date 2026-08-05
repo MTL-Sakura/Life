@@ -2889,6 +2889,30 @@ p {
   margin-top: 14px;
 }
 
+.focus-idle-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 11px;
+  color: var(--subtle);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.focus-idle-status svg {
+  flex: 0 0 auto;
+}
+
+.focus-idle-granted {
+  color: var(--green);
+}
+
+.focus-idle-denied {
+  color: #9a4938;
+}
+
 .task-detail-section {
   padding: 20px 0;
   border-bottom: 1px solid var(--line);
@@ -3726,6 +3750,97 @@ p {
     margin: 0 -22px -22px;
     padding: 14px 22px calc(14px + env(safe-area-inset-bottom));
     background: var(--paper);
+  }
+}
+
+.idle-warning-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(27, 30, 26, 0.58);
+  backdrop-filter: blur(5px);
+}
+
+.idle-warning-dialog {
+  width: min(430px, 100%);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 30px;
+  color: var(--ink);
+  background: var(--paper);
+  box-shadow: 0 24px 70px rgba(26, 29, 25, 0.26);
+  text-align: center;
+}
+
+.idle-warning-icon {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 16px;
+  border: 1px solid #c8b582;
+  border-radius: 7px;
+  color: #846b2f;
+  background: #f6f0df;
+}
+
+.idle-warning-dialog h2 {
+  margin-top: 5px;
+  font-family: Georgia, "Songti SC", serif;
+  font-size: 25px;
+}
+
+.idle-warning-dialog > p:not(.eyebrow) {
+  margin: 10px auto 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.7;
+}
+
+.idle-warning-countdown {
+  display: block;
+  margin-top: 18px;
+  font-family: Georgia, "Songti SC", serif;
+  font-size: 50px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.idle-warning-caption {
+  display: block;
+  margin: 7px 0 14px;
+  color: var(--subtle);
+  font-size: 9px;
+}
+
+.idle-warning-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+@media (max-width: 680px) {
+  .idle-warning-backdrop {
+    align-items: end;
+    justify-items: stretch;
+    padding: 0;
+  }
+
+  .idle-warning-dialog {
+    width: 100%;
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 8px 8px 0 0;
+    padding: 26px 20px calc(24px + env(safe-area-inset-bottom));
+  }
+
+  .idle-warning-actions > button {
+    flex: 1;
   }
 }
 

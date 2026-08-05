@@ -73,8 +73,8 @@ export const api = {
     return result.task
   },
 
-  async focusTask(taskId: number, action: 'start' | 'pause' | 'resume' | 'end'): Promise<Task> {
-    const result = await request<{ task: Task }>(`focus.${action}`, { method: 'POST', body: { taskId } })
+  async focusTask(taskId: number, action: 'start' | 'pause' | 'resume' | 'end', idleSeconds = 0): Promise<Task> {
+    const result = await request<{ task: Task }>(`focus.${action}`, { method: 'POST', body: { taskId, idleSeconds } })
     return result.task
   },
 
