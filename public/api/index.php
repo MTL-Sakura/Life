@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Life\Auth;
 use Life\AiPlanner;
 use Life\AiPlannerException;
+use Life\BackupManager;
 use Life\Database;
 use Life\DateTimes;
 use Life\Http;
@@ -78,9 +79,10 @@ switch ($action) {
         $reminderAt = reminderAt($startAt, $reminderMinutes);
         $status = $startAt === null ? 'inbox' : validStatus((string) ($input['status'] ?? 'planned'));
 
+        $recurrenceRule = nullableString($input['recurrenceRule'] ?? null);
         $statement = $db->prepare(
-            'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, is_focus, recurrence_rule, reminder_minutes, reminder_at)
-             VALUES (:user_id, :project_id, :category_id, :title, :notes, :status, :priority, :start_at, :end_at, :due_at, :estimated_minutes, :is_focus, :recurrence_rule, :reminder_minutes, :reminder_at)'
+            'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, is_focus, recurrence_rule, schedule_mode, window_start, window_end, reminder_minutes, reminder_at)
+             VALUES (:user_id, :project_id, :category_id, :title, :notes, :status, :priority, :start_at, :end_at, :due_at, :estimated_minutes, :is_focus, :recurrence_rule, :schedule_mode, :window_start, :window_end, :reminder_minutes, :reminder_at)'
         );
         $statement->execute([
             'user_id' => $userId,
@@ -95,11 +97,18 @@ switch ($action) {
             'due_at' => $dueAt,
             'estimated_minutes' => max(1, min(1440, (int) ($input['duration'] ?? 30))),
             'is_focus' => (int) (bool) ($input['isFocus'] ?? false),
-            'recurrence_rule' => nullableString($input['recurrenceRule'] ?? null),
+            'recurrence_rule' => $recurrenceRule,
+            'schedule_mode' => validScheduleMode((string) ($input['scheduleMode'] ?? ($startAt === null ? 'flexible' : 'fixed'))),
+            'window_start' => validTime(nullableString($input['windowStart'] ?? null)),
+            'window_end' => validTime(nullableString($input['windowEnd'] ?? null)),
             'reminder_minutes' => $reminderMinutes,
             'reminder_at' => $reminderAt,
         ]);
         $taskId = (int) $db->lastInsertId();
+        if ($recurrenceRule !== null) {
+            $seriesId = createTaskSeries($db, $userId, $recurrenceRule);
+            $db->prepare('UPDATE tasks SET recurrence_series_id = ? WHERE id = ?')->execute([$seriesId, $taskId]);
+        }
         $subtaskStatement = $db->prepare('INSERT INTO subtasks (task_id, title, completed, position) VALUES (?, ?, ?, ?)');
         foreach (normalizedSubtasks($input['subtasks'] ?? []) as $position => $subtask) {
             if ($subtask['title'] !== '') {
@@ -124,6 +133,9 @@ switch ($action) {
             'duration' => 'estimated_minutes',
             'isFocus' => 'is_focus',
             'recurrenceRule' => 'recurrence_rule',
+            'scheduleMode' => 'schedule_mode',
+            'windowStart' => 'window_start',
+            'windowEnd' => 'window_end',
             'reminderMinutes' => 'reminder_minutes',
         ];
         foreach ($simpleFields as $inputKey => $column) {
@@ -139,6 +151,10 @@ switch ($action) {
                 $value = (int) (bool) $value;
             } elseif ($inputKey === 'recurrenceRule') {
                 $value = nullableString($value);
+            } elseif ($inputKey === 'scheduleMode') {
+                $value = validScheduleMode((string) $value);
+            } elseif (in_array($inputKey, ['windowStart', 'windowEnd'], true)) {
+                $value = validTime(nullableString($value));
             } else {
                 $value = trim((string) $value);
             }
@@ -183,6 +199,8 @@ switch ($action) {
             Http::json(['task' => findTask($db, $taskId, $userId, $timezone)]);
         }
 
+        $updateScope = ($input['updateScope'] ?? 'single') === 'future' ? 'future' : 'single';
+        $isRecurringEdit = !array_key_exists('completed', $input) && nullableString($current['recurrence_rule'] ?? null) !== null;
         $shouldGenerateNext = array_key_exists('completed', $input)
             && (bool) $input['completed']
             && $current['status'] !== 'completed'
@@ -190,6 +208,24 @@ switch ($action) {
         $nextTaskId = null;
         $db->beginTransaction();
         try {
+            if ($isRecurringEdit && $updateScope === 'single') {
+                $nextTaskId = createNextRecurringTask($db, $current, $timezone);
+                $updates['recurrence_rule'] = null;
+                $updates['recurrence_series_id'] = null;
+            } elseif ($isRecurringEdit && $updateScope === 'future') {
+                $seriesId = nullableInt($current['recurrence_series_id'] ?? null);
+                if ($seriesId !== null) {
+                    $moment = $current['start_at'] ?? $current['due_at'] ?? $current['end_at'] ?? '9999-12-31 23:59:59';
+                    $db->prepare('DELETE FROM tasks WHERE user_id = ? AND recurrence_series_id = ? AND id != ? AND status != "completed" AND COALESCE(start_at, due_at, end_at) >= ?')
+                        ->execute([$userId, $seriesId, $taskId, $moment]);
+                    $effectiveRule = array_key_exists('recurrence_rule', $updates) ? $updates['recurrence_rule'] : $current['recurrence_rule'];
+                    if ($effectiveRule !== null) {
+                        $db->prepare('UPDATE task_series SET recurrence_rule = ? WHERE id = ? AND user_id = ?')->execute([$effectiveRule, $seriesId, $userId]);
+                    } else {
+                        $updates['recurrence_series_id'] = null;
+                    }
+                }
+            }
             if ($updates !== []) {
                 foreach ($updates as $value) {
                     $params[] = $value;
@@ -202,8 +238,11 @@ switch ($action) {
             if ($subtasksChanged) {
                 syncTaskSubtasks($db, $taskId, (array) ($input['subtasks'] ?? []));
             }
+            if (array_intersect(['startAt', 'endAt', 'duration', 'scheduleMode', 'windowStart', 'windowEnd'], array_keys($input)) !== []) {
+                $db->prepare('DELETE FROM task_schedule_blocks WHERE task_id = ? AND user_id = ?')->execute([$taskId, $userId]);
+            }
             if ($shouldGenerateNext) {
-                $nextTaskId = createNextRecurringTask($db, ownedRow($db, 'tasks', $taskId, $userId));
+                $nextTaskId = createNextRecurringTask($db, ownedRow($db, 'tasks', $taskId, $userId), $timezone);
             }
             $db->commit();
         } catch (Throwable $error) {
@@ -223,6 +262,61 @@ switch ($action) {
         $statement = $db->prepare('DELETE FROM tasks WHERE id = ? AND user_id = ?');
         $statement->execute([(int) ($input['id'] ?? 0), $userId]);
         Http::json(['ok' => true]);
+
+    case 'tasks.recurrence.skip':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $taskId = (int) ($input['id'] ?? 0);
+        $task = ownedRow($db, 'tasks', $taskId, $userId);
+        if (nullableString($task['recurrence_rule'] ?? null) === null) {
+            Http::json(['error' => '这个任务不是循环任务。'], 422);
+        }
+        $db->beginTransaction();
+        try {
+            createNextRecurringTask($db, $task, $timezone);
+            $db->prepare("UPDATE tasks SET status = 'cancelled', occurrence_state = 'skipped', reminder_at = NULL, reminder_sent_at = NULL WHERE id = ? AND user_id = ?")
+                ->execute([$taskId, $userId]);
+            $db->commit();
+        } catch (Throwable $error) {
+            $db->rollBack();
+            throw $error;
+        }
+        Http::json(bootstrapData($db, $userId, $timezone));
+
+    case 'tasks.recurrence.pause':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $taskId = (int) ($input['id'] ?? 0);
+        $pausedUntil = (string) ($input['pausedUntil'] ?? '');
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $pausedUntil)) {
+            Http::json(['error' => '恢复日期格式不正确。'], 422);
+        }
+        $task = ownedRow($db, 'tasks', $taskId, $userId);
+        $seriesId = nullableInt($task['recurrence_series_id'] ?? null);
+        if ($seriesId === null) {
+            Http::json(['error' => '这个任务还没有循环系列。'], 422);
+        }
+        $today = new DateTimeImmutable('today', new DateTimeZone($timezone));
+        $resumeDate = new DateTimeImmutable($pausedUntil, new DateTimeZone($timezone));
+        if ($resumeDate <= $today) {
+            Http::json(['error' => '恢复日期必须晚于今天。'], 422);
+        }
+        $resumeUtc = $resumeDate->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $db->beginTransaction();
+        try {
+            $db->prepare('UPDATE task_series SET paused_until = ? WHERE id = ? AND user_id = ?')->execute([$pausedUntil, $seriesId, $userId]);
+            $db->prepare(
+                "UPDATE tasks SET status = 'cancelled', occurrence_state = 'skipped', reminder_at = NULL, reminder_sent_at = NULL
+                 WHERE user_id = ? AND recurrence_series_id = ? AND status != 'completed'
+                   AND COALESCE(start_at, due_at, end_at) < ?"
+            )->execute([$userId, $seriesId, $resumeUtc]);
+            ensureRecurringTaskContinuity($db, $userId, $timezone, $pausedUntil);
+            $db->commit();
+        } catch (Throwable $error) {
+            $db->rollBack();
+            throw $error;
+        }
+        Http::json(bootstrapData($db, $userId, $timezone));
 
     case 'tasks.subtask':
         Http::requireMethod('PATCH', 'POST');
@@ -360,7 +454,50 @@ switch ($action) {
 
     case 'data.export':
         Http::requireMethod('GET');
-        Http::json(userDataExport($db, $userId, $timezone));
+        Http::json((new BackupManager())->export($db, $userId, $timezone));
+
+    case 'backup.create':
+        Http::requireMethod('POST');
+        (new BackupManager())->create($db, $userId, $timezone, 'manual');
+        Http::json(bootstrapData($db, $userId, $timezone), 201);
+
+    case 'backup.preview':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        try {
+            Http::json(['preview' => (new BackupManager())->preview((array) ($input['backup'] ?? []))]);
+        } catch (RuntimeException $error) {
+            Http::json(['error' => $error->getMessage()], 422);
+        }
+
+    case 'backup.download':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        try {
+            Http::json((new BackupManager())->stored($db, $userId, (int) ($input['id'] ?? 0)));
+        } catch (RuntimeException $error) {
+            Http::json(['error' => $error->getMessage()], 404);
+        }
+
+    case 'backup.restore':
+    case 'backup.restore.stored':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $passwordHash = $db->prepare('SELECT password_hash FROM users WHERE id = ? LIMIT 1');
+        $passwordHash->execute([$userId]);
+        if (!password_verify((string) ($input['password'] ?? ''), (string) $passwordHash->fetchColumn())) {
+            Http::json(['error' => '登录密码不正确。'], 422);
+        }
+        $manager = new BackupManager();
+        try {
+            $backup = $action === 'backup.restore.stored'
+                ? $manager->stored($db, $userId, (int) ($input['id'] ?? 0))
+                : (array) ($input['backup'] ?? []);
+            $manager->restore($db, $userId, $timezone, $backup);
+            Http::json(bootstrapData($db, $userId, (string) (($backup['data']['account']['timezone'] ?? null) ?: $timezone)));
+        } catch (RuntimeException $error) {
+            Http::json(['error' => $error->getMessage()], 422);
+        }
 
     case 'data.import':
         Http::requireMethod('POST');
@@ -393,6 +530,15 @@ switch ($action) {
     case 'settings.update':
         Http::requireMethod('PATCH', 'POST');
         $input = Http::input();
+        $planningStart = validTime((string) ($input['planningStartTime'] ?? '09:00'));
+        $planningEnd = validTime((string) ($input['planningEndTime'] ?? '23:30'));
+        $lunchStart = validTime((string) ($input['lunchStartTime'] ?? '12:30'));
+        $lunchEnd = validTime((string) ($input['lunchEndTime'] ?? '13:30'));
+        $dinnerStart = validTime((string) ($input['dinnerStartTime'] ?? '18:00'));
+        $dinnerEnd = validTime((string) ($input['dinnerEndTime'] ?? '19:00'));
+        if ($planningStart >= $planningEnd || $lunchStart >= $lunchEnd || $dinnerStart >= $dinnerEnd) {
+            Http::json(['error' => '日程、午餐或晚餐的结束时间必须晚于开始时间。'], 422);
+        }
         $db->beginTransaction();
         try {
             $db->prepare('UPDATE users SET display_name = ?, email = ?, timezone = ? WHERE id = ?')->execute([
@@ -402,9 +548,9 @@ switch ($action) {
                 $userId,
             ]);
             $db->prepare(
-                'INSERT INTO user_settings (user_id, email_reminders, daily_summary, daily_summary_time, overdue_reminder, task_reminder_minutes, week_starts_on)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE email_reminders = VALUES(email_reminders), daily_summary = VALUES(daily_summary), daily_summary_time = VALUES(daily_summary_time), overdue_reminder = VALUES(overdue_reminder), task_reminder_minutes = VALUES(task_reminder_minutes), week_starts_on = VALUES(week_starts_on)'
+                'INSERT INTO user_settings (user_id, email_reminders, daily_summary, daily_summary_time, overdue_reminder, task_reminder_minutes, week_starts_on, planning_start_time, planning_end_time, lunch_start_time, lunch_end_time, dinner_start_time, dinner_end_time, planning_buffer_minutes)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE email_reminders = VALUES(email_reminders), daily_summary = VALUES(daily_summary), daily_summary_time = VALUES(daily_summary_time), overdue_reminder = VALUES(overdue_reminder), task_reminder_minutes = VALUES(task_reminder_minutes), week_starts_on = VALUES(week_starts_on), planning_start_time = VALUES(planning_start_time), planning_end_time = VALUES(planning_end_time), lunch_start_time = VALUES(lunch_start_time), lunch_end_time = VALUES(lunch_end_time), dinner_start_time = VALUES(dinner_start_time), dinner_end_time = VALUES(dinner_end_time), planning_buffer_minutes = VALUES(planning_buffer_minutes)'
             )->execute([
                 $userId,
                 (int) (bool) ($input['emailReminders'] ?? true),
@@ -413,6 +559,13 @@ switch ($action) {
                 (int) (bool) ($input['overdueReminder'] ?? false),
                 max(0, min(10080, (int) ($input['taskReminderMinutes'] ?? 10))),
                 in_array(($input['weekStartsOn'] ?? 'monday'), ['monday', 'sunday'], true) ? $input['weekStartsOn'] : 'monday',
+                $planningStart,
+                $planningEnd,
+                $lunchStart,
+                $lunchEnd,
+                $dinnerStart,
+                $dinnerEnd,
+                max(0, min(120, (int) ($input['planningBufferMinutes'] ?? 15))),
             ]);
             $db->commit();
         } catch (Throwable $error) {
@@ -459,13 +612,15 @@ switch ($action) {
 
 function bootstrapData(PDO $db, int $userId, string $timezone): array
 {
+    ensureRecurringTaskSeries($db, $userId);
     ensureRecurringTaskContinuity($db, $userId, $timezone);
     $tasksStatement = $db->prepare(
-        'SELECT tasks.*, projects.title AS project_title, categories.name AS category_name, categories.color AS category_color
+        'SELECT tasks.*, task_series.paused_until AS recurrence_paused_until, projects.title AS project_title, categories.name AS category_name, categories.color AS category_color
          FROM tasks
+         LEFT JOIN task_series ON task_series.id = tasks.recurrence_series_id
          LEFT JOIN projects ON projects.id = tasks.project_id
          LEFT JOIN categories ON categories.id = tasks.category_id
-         WHERE tasks.user_id = ? AND tasks.status != "cancelled"
+         WHERE tasks.user_id = ? AND (tasks.status != "cancelled" OR tasks.occurrence_state = "skipped")
          ORDER BY tasks.status = "completed", tasks.start_at IS NULL, tasks.start_at, tasks.created_at DESC'
     );
     $tasksStatement->execute([$userId]);
@@ -473,12 +628,14 @@ function bootstrapData(PDO $db, int $userId, string $timezone): array
     $taskIds = array_map(static fn (array $row): int => (int) $row['id'], $taskRows);
     $subtasks = subtaskMap($db, $taskIds);
     $focusSessions = focusSessionMap($db, $taskIds);
+    $scheduleBlocks = scheduleBlockMap($db, $taskIds);
     $tasks = array_map(
         static fn (array $row): array => Views::task(
             $row,
             $timezone,
             $subtasks[(int) $row['id']] ?? [],
-            $focusSessions[(int) $row['id']] ?? null
+            $focusSessions[(int) $row['id']] ?? null,
+            $scheduleBlocks[(int) $row['id']] ?? []
         ),
         $taskRows
     );
@@ -488,7 +645,7 @@ function bootstrapData(PDO $db, int $userId, string $timezone): array
     $categories = array_map(static fn (array $row): array => ['id' => (int) $row['id'], 'name' => $row['name'], 'color' => $row['color']], $categoryStatement->fetchAll());
 
     $projectStatement = $db->prepare(
-        'SELECT projects.*, COUNT(tasks.id) AS total_tasks, SUM(tasks.status = "completed") AS completed_tasks
+        'SELECT projects.*, SUM(tasks.status != "cancelled") AS total_tasks, SUM(tasks.status = "completed") AS completed_tasks
          FROM projects LEFT JOIN tasks ON tasks.project_id = projects.id
          WHERE projects.user_id = ? AND projects.status != "archived"
          GROUP BY projects.id ORDER BY projects.updated_at DESC'
@@ -549,22 +706,59 @@ function bootstrapData(PDO $db, int $userId, string $timezone): array
         'projects' => $projects,
         'categories' => $categories,
         'planImports' => planImports($db, $userId),
+        'backups' => (new BackupManager())->records($db, $userId),
         'settings' => settingsView($settingsRow),
         'review' => reviewData($db, $userId, $weekStartUtc, $weekEndUtc),
         'csrfToken' => Auth::csrfToken(),
     ];
 }
 
-function ensureRecurringTaskContinuity(PDO $db, int $userId, string $timezone): void
+function ensureRecurringTaskSeries(PDO $db, int $userId): void
 {
-    $cutoff = (new DateTimeImmutable('tomorrow', new DateTimeZone($timezone)))
+    $statement = $db->prepare(
+        'SELECT id, recurrence_source_task_id, recurrence_series_id, recurrence_rule
+         FROM tasks WHERE user_id = ? AND recurrence_rule IS NOT NULL AND recurrence_rule != ""
+         ORDER BY id'
+    );
+    $statement->execute([$userId]);
+    $seriesByTask = [];
+    $update = $db->prepare('UPDATE tasks SET recurrence_series_id = ? WHERE id = ? AND user_id = ?');
+    foreach ($statement->fetchAll() as $task) {
+        $taskId = (int) $task['id'];
+        $seriesId = nullableInt($task['recurrence_series_id'] ?? null);
+        $parentId = nullableInt($task['recurrence_source_task_id'] ?? null);
+        if ($seriesId === null && $parentId !== null) {
+            $seriesId = $seriesByTask[$parentId] ?? null;
+        }
+        if ($seriesId === null) {
+            $seriesId = createTaskSeries($db, $userId, (string) $task['recurrence_rule']);
+        }
+        $seriesByTask[$taskId] = $seriesId;
+        if (nullableInt($task['recurrence_series_id'] ?? null) !== $seriesId) {
+            $update->execute([$seriesId, $taskId, $userId]);
+        }
+    }
+}
+
+function createTaskSeries(PDO $db, int $userId, string $recurrenceRule): int
+{
+    $statement = $db->prepare('INSERT INTO task_series (user_id, recurrence_rule) VALUES (?, ?)');
+    $statement->execute([$userId, $recurrenceRule]);
+    return (int) $db->lastInsertId();
+}
+
+function ensureRecurringTaskContinuity(PDO $db, int $userId, string $timezone, ?string $throughDate = null): void
+{
+    $cutoffLocal = $throughDate === null
+        ? new DateTimeImmutable('tomorrow', new DateTimeZone($timezone))
+        : new DateTimeImmutable($throughDate, new DateTimeZone($timezone));
+    $cutoff = $cutoffLocal
         ->setTimezone(new DateTimeZone('UTC'))
         ->format('Y-m-d H:i:s');
     $leafStatement = $db->prepare(
         'SELECT task.* FROM tasks AS task
          LEFT JOIN tasks AS child ON child.recurrence_source_task_id = task.id
          WHERE task.user_id = ?
-           AND task.status != "cancelled"
            AND task.recurrence_rule IS NOT NULL
            AND task.recurrence_rule != ""
            AND child.id IS NULL
@@ -580,7 +774,7 @@ function ensureRecurringTaskContinuity(PDO $db, int $userId, string $timezone): 
             return;
         }
         foreach ($leaves as $leaf) {
-            createNextRecurringTask($db, $leaf);
+            createNextRecurringTask($db, $leaf, $timezone);
         }
     }
 
@@ -606,8 +800,8 @@ function planImports(PDO $db, int $userId): array
 function findTask(PDO $db, int $taskId, int $userId, string $timezone): array
 {
     $statement = $db->prepare(
-        'SELECT tasks.*, projects.title AS project_title, categories.name AS category_name, categories.color AS category_color
-         FROM tasks LEFT JOIN projects ON projects.id = tasks.project_id LEFT JOIN categories ON categories.id = tasks.category_id
+        'SELECT tasks.*, task_series.paused_until AS recurrence_paused_until, projects.title AS project_title, categories.name AS category_name, categories.color AS category_color
+         FROM tasks LEFT JOIN task_series ON task_series.id = tasks.recurrence_series_id LEFT JOIN projects ON projects.id = tasks.project_id LEFT JOIN categories ON categories.id = tasks.category_id
          WHERE tasks.id = ? AND tasks.user_id = ? LIMIT 1'
     );
     $statement->execute([$taskId, $userId]);
@@ -616,7 +810,8 @@ function findTask(PDO $db, int $taskId, int $userId, string $timezone): array
         Http::json(['error' => '任务不存在。'], 404);
     }
 
-    return Views::task($task, $timezone, taskSubtasks($db, $taskId), latestFocusSession($db, $taskId));
+    $blocks = scheduleBlockMap($db, [$taskId]);
+    return Views::task($task, $timezone, taskSubtasks($db, $taskId), latestFocusSession($db, $taskId), $blocks[$taskId] ?? []);
 }
 
 function latestFocusSession(PDO $db, int $taskId, bool $forUpdate = false): ?array
@@ -757,6 +952,24 @@ function subtaskMap(PDO $db, array $taskIds): array
     return $map;
 }
 
+function scheduleBlockMap(PDO $db, array $taskIds): array
+{
+    if ($taskIds === []) {
+        return [];
+    }
+    $placeholders = implode(', ', array_fill(0, count($taskIds), '?'));
+    $statement = $db->prepare(
+        "SELECT id, task_id, start_at, end_at, source, position
+         FROM task_schedule_blocks WHERE task_id IN ({$placeholders}) ORDER BY task_id, position, start_at"
+    );
+    $statement->execute($taskIds);
+    $map = [];
+    foreach ($statement->fetchAll() as $block) {
+        $map[(int) $block['task_id']][] = $block;
+    }
+    return $map;
+}
+
 function normalizedSubtasks(mixed $value): array
 {
     $normalized = [];
@@ -802,7 +1015,7 @@ function syncTaskSubtasks(PDO $db, int $taskId, array $input): void
     $db->prepare("DELETE FROM subtasks WHERE task_id = ? AND id NOT IN ({$placeholders})")->execute([$taskId, ...$keptIds]);
 }
 
-function createNextRecurringTask(PDO $db, array $task): ?int
+function createNextRecurringTask(PDO $db, array $task, string $timezone): ?int
 {
     $rule = strtoupper((string) ($task['recurrence_rule'] ?? ''));
     $interval = match (true) {
@@ -829,10 +1042,22 @@ function createNextRecurringTask(PDO $db, array $task): ?int
         return null;
     }
     $reminderMinutes = isset($task['reminder_minutes']) ? (int) $task['reminder_minutes'] : null;
+    $seriesId = nullableInt($task['recurrence_series_id'] ?? null);
+    $pausedUntil = null;
+    if ($seriesId !== null) {
+        $series = $db->prepare('SELECT paused_until FROM task_series WHERE id = ? AND user_id = ? LIMIT 1');
+        $series->execute([$seriesId, (int) $task['user_id']]);
+        $pausedUntil = nullableString($series->fetchColumn());
+    }
+    $nextMoment = $nextStart ?? $nextDue ?? $nextEnd;
+    $nextLocalDate = $nextMoment === null ? null : (new DateTimeImmutable($nextMoment, new DateTimeZone('UTC')))
+        ->setTimezone(new DateTimeZone($timezone))
+        ->format('Y-m-d');
+    $skipped = $pausedUntil !== null && $nextLocalDate !== null && $nextLocalDate < $pausedUntil;
 
     $statement = $db->prepare(
-        'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, is_focus, recurrence_rule, recurrence_source_task_id, reminder_minutes, reminder_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, is_focus, recurrence_rule, recurrence_source_task_id, recurrence_series_id, occurrence_state, schedule_mode, window_start, window_end, reminder_minutes, reminder_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     $statement->execute([
         (int) $task['user_id'],
@@ -840,7 +1065,7 @@ function createNextRecurringTask(PDO $db, array $task): ?int
         nullableInt($task['category_id'] ?? null),
         $task['title'],
         $task['notes'] ?? '',
-        $nextStart === null ? 'inbox' : 'planned',
+        $skipped ? 'cancelled' : ($nextStart === null ? 'inbox' : 'planned'),
         $task['priority'],
         $nextStart,
         $nextEnd,
@@ -849,8 +1074,13 @@ function createNextRecurringTask(PDO $db, array $task): ?int
         (int) ($task['is_focus'] ?? 0),
         $task['recurrence_rule'],
         (int) $task['id'],
+        $seriesId,
+        $skipped ? 'skipped' : 'normal',
+        $task['schedule_mode'] ?? ($nextStart === null ? 'flexible' : 'fixed'),
+        $task['window_start'] ?? null,
+        $task['window_end'] ?? null,
         $reminderMinutes,
-        reminderAt($nextStart, $reminderMinutes),
+        $skipped ? null : reminderAt($nextStart, $reminderMinutes),
     ]);
     $nextTaskId = (int) $db->lastInsertId();
     $copy = $db->prepare('INSERT INTO subtasks (task_id, title, completed, position) SELECT ?, title, 0, position FROM subtasks WHERE task_id = ?');
@@ -967,6 +1197,13 @@ function settingsView(array $row): array
         'overdueReminder' => (bool) ($row['overdue_reminder'] ?? false),
         'taskReminderMinutes' => (int) ($row['task_reminder_minutes'] ?? 10),
         'weekStartsOn' => $row['week_starts_on'] ?? 'monday',
+        'planningStartTime' => substr((string) ($row['planning_start_time'] ?? '09:00:00'), 0, 5),
+        'planningEndTime' => substr((string) ($row['planning_end_time'] ?? '23:30:00'), 0, 5),
+        'lunchStartTime' => substr((string) ($row['lunch_start_time'] ?? '12:30:00'), 0, 5),
+        'lunchEndTime' => substr((string) ($row['lunch_end_time'] ?? '13:30:00'), 0, 5),
+        'dinnerStartTime' => substr((string) ($row['dinner_start_time'] ?? '18:00:00'), 0, 5),
+        'dinnerEndTime' => substr((string) ($row['dinner_end_time'] ?? '19:00:00'), 0, 5),
+        'planningBufferMinutes' => (int) ($row['planning_buffer_minutes'] ?? 15),
     ];
 }
 
@@ -978,41 +1215,6 @@ function userView(array $user): array
         'email' => $user['email'],
         'displayName' => $user['display_name'],
         'timezone' => $user['timezone'],
-    ];
-}
-
-function userDataExport(PDO $db, int $userId, string $timezone): array
-{
-    $queries = [
-        'account' => 'SELECT username, email, display_name, timezone, created_at, updated_at FROM users WHERE id = ?',
-        'settings' => 'SELECT email_reminders, daily_summary, daily_summary_time, overdue_reminder, task_reminder_minutes, week_starts_on, updated_at FROM user_settings WHERE user_id = ?',
-        'categories' => 'SELECT id, name, color, created_at FROM categories WHERE user_id = ? ORDER BY id',
-        'projects' => 'SELECT * FROM projects WHERE user_id = ? ORDER BY id',
-        'projectStages' => 'SELECT project_stages.* FROM project_stages INNER JOIN projects ON projects.id = project_stages.project_id WHERE projects.user_id = ? ORDER BY project_stages.project_id, project_stages.position',
-        'tasks' => 'SELECT * FROM tasks WHERE user_id = ? ORDER BY id',
-        'focusSessions' => 'SELECT * FROM focus_sessions WHERE user_id = ? ORDER BY id',
-        'subtasks' => 'SELECT subtasks.* FROM subtasks INNER JOIN tasks ON tasks.id = subtasks.task_id WHERE tasks.user_id = ? ORDER BY subtasks.task_id, subtasks.position',
-        'habits' => 'SELECT * FROM habits WHERE user_id = ? ORDER BY id',
-        'habitLogs' => 'SELECT habit_logs.* FROM habit_logs INNER JOIN habits ON habits.id = habit_logs.habit_id WHERE habits.user_id = ? ORDER BY habit_logs.habit_id, habit_logs.log_date',
-        'notifications' => 'SELECT type, reference_key, sent_at, created_at FROM notification_logs WHERE user_id = ? ORDER BY id',
-        'aiPlans' => 'SELECT id, status, model, source_task_ids, target_start_date, target_end_date, proposal_json, error_message, input_tokens, output_tokens, expires_at, applied_at, created_at, updated_at FROM ai_plans WHERE user_id = ? ORDER BY id',
-        'planImports' => 'SELECT id, import_key, document_name, imported_counts, created_at FROM plan_imports WHERE user_id = ? ORDER BY id',
-        'planImportItems' => 'SELECT plan_import_items.plan_import_id, plan_import_items.entity_type, plan_import_items.entity_id, plan_import_items.created_at FROM plan_import_items INNER JOIN plan_imports ON plan_imports.id = plan_import_items.plan_import_id WHERE plan_imports.user_id = ? ORDER BY plan_import_items.id',
-    ];
-
-    $data = [];
-    foreach ($queries as $key => $sql) {
-        $statement = $db->prepare($sql);
-        $statement->execute([$userId]);
-        $rows = $statement->fetchAll();
-        $data[$key] = in_array($key, ['account', 'settings'], true) ? ($rows[0] ?? null) : $rows;
-    }
-
-    return [
-        'schemaVersion' => 5,
-        'exportedAt' => gmdate('c'),
-        'timezone' => $timezone,
-        'data' => $data,
     ];
 }
 
@@ -1038,6 +1240,22 @@ function validPriority(string $value): string
 function validStatus(string $value): string
 {
     return in_array($value, ['inbox', 'planned', 'in_progress', 'completed', 'cancelled'], true) ? $value : 'inbox';
+}
+
+function validScheduleMode(string $value): string
+{
+    return in_array($value, ['fixed', 'window', 'flexible'], true) ? $value : 'flexible';
+}
+
+function validTime(?string $value): ?string
+{
+    if ($value === null || $value === '') {
+        return null;
+    }
+    if (!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/', $value)) {
+        Http::json(['error' => '时间格式不正确。'], 422);
+    }
+    return substr($value, 0, 5) . ':00';
 }
 
 function validFrequency(string $value): string

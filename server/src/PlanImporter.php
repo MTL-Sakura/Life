@@ -87,8 +87,8 @@ final class PlanImporter
             }
 
             $taskInsert = $db->prepare(
-                'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, is_focus, recurrence_rule, reminder_minutes, reminder_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, is_focus, recurrence_rule, schedule_mode, reminder_minutes, reminder_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
             );
             $subtaskInsert = $db->prepare('INSERT INTO subtasks (task_id, title, completed, position) VALUES (?, ?, 0, ?)');
             foreach ($plan['tasks'] as $task) {
@@ -125,6 +125,7 @@ final class PlanImporter
                     $task['duration'],
                     (int) $task['focus'],
                     $task['recurrence'],
+                    $start === null ? 'flexible' : 'fixed',
                     $start === null ? null : $task['reminderMinutes'],
                     $this->utc($reminder),
                 ]);

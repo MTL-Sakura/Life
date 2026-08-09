@@ -28,6 +28,16 @@ export type FocusSession = {
   endedAt?: string | null
 }
 
+export type ScheduleBlock = {
+  id: number
+  startAt: string
+  endAt: string
+  start: string
+  end: string
+  source: 'manual' | 'ai'
+  position: number
+}
+
 export type Task = {
   id: number
   title: string
@@ -52,6 +62,13 @@ export type Task = {
   dueAt?: string | null
   recurrenceRule?: string | null
   recurrenceSourceTaskId?: number | null
+  recurrenceSeriesId?: number | null
+  recurrencePausedUntil?: string | null
+  skipped?: boolean
+  scheduleMode?: 'fixed' | 'window' | 'flexible'
+  windowStart?: string | null
+  windowEnd?: string | null
+  scheduleBlocks?: ScheduleBlock[]
   reminderMinutes?: number | null
   completedAt?: string | null
   subtasks?: Subtask[]
@@ -103,6 +120,13 @@ export type UserSettings = {
   overdueReminder: boolean
   taskReminderMinutes: number
   weekStartsOn: 'monday' | 'sunday'
+  planningStartTime: string
+  planningEndTime: string
+  lunchStartTime: string
+  lunchEndTime: string
+  dinnerStartTime: string
+  dinnerEndTime: string
+  planningBufferMinutes: number
 }
 
 export type ReviewSummary = {
@@ -121,6 +145,11 @@ export type AiPlanItem = {
   duration: number
   priority: Priority
   reason: string
+  blocks: Array<{
+    startAt: string
+    endAt: string
+    duration: number
+  }>
 }
 
 export type AiPlanSkippedItem = {
@@ -200,12 +229,35 @@ export type PlanImportBatch = {
 
 export type PlanImportResult = BootstrapData & { imported: PlanImportCounts }
 
+export type BackupRecord = {
+  id: number
+  kind: 'manual' | 'daily' | 'weekly' | 'pre_restore'
+  fileName: string
+  sizeBytes: number
+  schemaVersion: number
+  createdAt: string
+}
+
+export type BackupPreview = {
+  schemaVersion: number
+  exportedAt: string
+  timezone: string
+  counts: {
+    tasks: number
+    projects: number
+    habits: number
+    categories: number
+    focusSessions: number
+  }
+}
+
 export type BootstrapData = {
   tasks: Task[]
   habits: Habit[]
   projects: Project[]
   categories: Category[]
   planImports: PlanImportBatch[]
+  backups: BackupRecord[]
   settings: UserSettings
   review: ReviewSummary
   csrfToken: string

@@ -1,4 +1,4 @@
-import type { AiPlan, BootstrapData, Habit, PlanImportDocument, PlanImportResult, Project, SessionUser, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BackupPreview, BootstrapData, Habit, PlanImportDocument, PlanImportResult, Project, SessionUser, Subtask, Task, UserSettings } from './types'
 
 let csrfToken: string | null = null
 
@@ -60,12 +60,20 @@ export const api = {
     return result.task
   },
 
-  async updateTask(input: Partial<Task> & { id: number }): Promise<{ task: Task; nextTask?: Task }> {
+  async updateTask(input: Partial<Task> & { id: number; updateScope?: 'single' | 'future' }): Promise<{ task: Task; nextTask?: Task }> {
     return request<{ task: Task; nextTask?: Task }>('tasks.update', { method: 'PATCH', body: input })
   },
 
   async deleteTask(id: number): Promise<void> {
     await request('tasks.delete', { method: 'DELETE', body: { id } })
+  },
+
+  async skipRecurringTask(id: number): Promise<BootstrapData> {
+    return request<BootstrapData>('tasks.recurrence.skip', { method: 'POST', body: { id } })
+  },
+
+  async pauseRecurringTask(id: number, pausedUntil: string): Promise<BootstrapData> {
+    return request<BootstrapData>('tasks.recurrence.pause', { method: 'POST', body: { id, pausedUntil } })
   },
 
   async updateSubtask(taskId: number, id: number, completed: boolean): Promise<Task> {
@@ -100,6 +108,27 @@ export const api = {
 
   async exportData(): Promise<Record<string, unknown>> {
     return request<Record<string, unknown>>('data.export')
+  },
+
+  async createBackup(): Promise<BootstrapData> {
+    return request<BootstrapData>('backup.create', { method: 'POST', body: {} })
+  },
+
+  async previewBackup(backup: Record<string, unknown>): Promise<BackupPreview> {
+    const result = await request<{ preview: BackupPreview }>('backup.preview', { method: 'POST', body: { backup } })
+    return result.preview
+  },
+
+  async restoreBackup(backup: Record<string, unknown>, password: string): Promise<BootstrapData> {
+    return request<BootstrapData>('backup.restore', { method: 'POST', body: { backup, password } })
+  },
+
+  async restoreStoredBackup(id: number, password: string): Promise<BootstrapData> {
+    return request<BootstrapData>('backup.restore.stored', { method: 'POST', body: { id, password } })
+  },
+
+  async downloadStoredBackup(id: number): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>('backup.download', { method: 'POST', body: { id } })
   },
 
   async importPlan(plan: PlanImportDocument): Promise<PlanImportResult> {

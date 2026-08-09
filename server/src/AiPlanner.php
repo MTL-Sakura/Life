@@ -13,8 +13,6 @@ use Throwable;
 
 final class AiPlanner
 {
-    private const DAY_START = '08:00:00';
-    private const DAY_END = '21:00:00';
     private const MAX_SOURCE_TASKS = 20;
 
     public function generate(PDO $db, int $userId, string $timezone): array
@@ -27,22 +25,23 @@ final class AiPlanner
         $zone = $this->timezone($timezone);
         $now = new DateTimeImmutable('now', $zone);
         $today = $now->setTime(0, 0);
-        $windowEnd = $today->modify('+7 days');
+        $windowEnd = $today->modify('+1 day');
+        $preferences = $this->preferences($db, $userId);
         $dailyLimit = max(1, min(10, (int) Config::get('OPENAI_DAILY_LIMIT', '2')));
         $usedToday = $this->usageToday($db, $userId, $today);
         if ($usedToday >= $dailyLimit) {
             throw new AiPlannerException("今天的 AI 安排次数已经用完了，明天可以再使用 {$dailyLimit} 次。", 429);
         }
 
-        $tasks = $this->sourceTasks($db, $userId, $timezone);
+        $tasks = $this->sourceTasks($db, $userId, $timezone, $today, $windowEnd);
         if ($tasks === []) {
-            throw new AiPlannerException('收集箱里没有需要安排的任务。');
+            throw new AiPlannerException('今天没有需要整理的任务。');
         }
 
-        $busy = $this->busyBlocks($db, $userId, $now, $windowEnd, $timezone);
+        $sourceTaskIds = array_map(static fn (array $task): int => (int) $task['id'], $tasks);
+        $busy = $this->busyBlocks($db, $userId, $today, $windowEnd, $timezone, $sourceTaskIds, $preferences);
         $model = trim((string) Config::get('OPENAI_MODEL', 'gpt-5.4-mini'));
         $expiresAt = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify('+30 minutes');
-        $sourceTaskIds = array_map(static fn (array $task): int => (int) $task['id'], $tasks);
 
         $insert = $db->prepare(
             'INSERT INTO ai_plans (user_id, status, model, source_task_ids, target_start_date, target_end_date, expires_at)
@@ -59,8 +58,8 @@ final class AiPlanner
         $planId = (int) $db->lastInsertId();
 
         try {
-            $response = $this->requestPlan($apiKey, $model, $timezone, $now, $windowEnd, $tasks, $busy);
-            $proposal = $this->validateProposal($response['proposal'], $tasks, $busy, $now, $windowEnd, $zone);
+            $response = $this->requestPlan($apiKey, $model, $timezone, $now, $windowEnd, $tasks, $busy, $preferences);
+            $proposal = $this->validateProposal($response['proposal'], $tasks, $busy, $now, $windowEnd, $zone, $preferences);
             if ($proposal['items'] === []) {
                 throw new AiPlannerException('AI 没有生成可用的时间安排，请稍后再试。', 502);
             }
@@ -118,36 +117,64 @@ final class AiPlanner
 
         $zone = $this->timezone($timezone);
         $appliedTaskIds = [];
+        try {
+            $sourceTaskIds = array_values(array_filter(array_map('intval', (array) json_decode((string) $plan['source_task_ids'], true, 512, JSON_THROW_ON_ERROR))));
+        } catch (JsonException) {
+            throw new AiPlannerException('AI 建议的任务列表已经损坏。', 500);
+        }
+        $sourcePlaceholders = $sourceTaskIds === [] ? '0' : implode(', ', array_fill(0, count($sourceTaskIds), '?'));
         $db->beginTransaction();
         try {
             $taskStatement = $db->prepare('SELECT * FROM tasks WHERE id = ? AND user_id = ? FOR UPDATE');
             $conflictStatement = $db->prepare(
                 'SELECT id FROM tasks
-                 WHERE user_id = ? AND id != ? AND status NOT IN ("completed", "cancelled")
+                 WHERE user_id = ? AND id NOT IN (' . $sourcePlaceholders . ') AND status NOT IN ("completed", "cancelled")
                    AND start_at IS NOT NULL AND end_at IS NOT NULL AND start_at < ? AND end_at > ?
                  LIMIT 1'
+            );
+            $blockConflictStatement = $db->prepare(
+                'SELECT id FROM task_schedule_blocks
+                 WHERE user_id = ? AND task_id NOT IN (' . $sourcePlaceholders . ') AND start_at < ? AND end_at > ? LIMIT 1'
             );
             $update = $db->prepare(
                 'UPDATE tasks SET status = "planned", priority = ?, start_at = ?, end_at = ?, reminder_at = ?, reminder_sent_at = NULL
                  WHERE id = ? AND user_id = ?'
             );
+            $insertBlock = $db->prepare(
+                'INSERT INTO task_schedule_blocks (user_id, task_id, start_at, end_at, source, position)
+                 VALUES (?, ?, ?, ?, "ai", ?)'
+            );
+            if ($sourceTaskIds !== []) {
+                $db->prepare('DELETE FROM task_schedule_blocks WHERE user_id = ? AND task_id IN (' . $sourcePlaceholders . ')')
+                    ->execute([$userId, ...$sourceTaskIds]);
+            }
 
             foreach ($proposal['items'] as $item) {
                 $taskId = (int) ($item['taskId'] ?? 0);
                 $taskStatement->execute([$taskId, $userId]);
                 $task = $taskStatement->fetch();
-                if (!$task || $task['status'] !== 'inbox' || $task['start_at'] !== null) {
+                if (!$task || in_array($task['status'], ['completed', 'cancelled'], true) || $task['schedule_mode'] === 'fixed') {
                     throw new AiPlannerException('任务状态已经变化，请重新生成 AI 安排。', 409);
                 }
 
-                $start = $this->parseStoredDate((string) ($item['startAt'] ?? ''), $zone);
-                $end = $start->add(new DateInterval('PT' . max(1, (int) $task['estimated_minutes']) . 'M'));
-                $startUtc = $start->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
-                $endUtc = $end->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
-                $conflictStatement->execute([$userId, $taskId, $endUtc, $startUtc]);
-                if ($conflictStatement->fetchColumn()) {
-                    throw new AiPlannerException('日程在预览后发生了变化，请重新生成 AI 安排。', 409);
+                $blocks = (array) ($item['blocks'] ?? []);
+                if ($blocks === []) {
+                    throw new AiPlannerException('AI 建议中的时间区块已经损坏。', 500);
                 }
+                $storedBlocks = [];
+                foreach ($blocks as $block) {
+                    $start = $this->parseStoredDate((string) ($block['startAt'] ?? ''), $zone);
+                    $end = $this->parseStoredDate((string) ($block['endAt'] ?? ''), $zone);
+                    $startUtc = $start->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+                    $endUtc = $end->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+                    $conflictStatement->execute([$userId, ...$sourceTaskIds, $endUtc, $startUtc]);
+                    $blockConflictStatement->execute([$userId, ...$sourceTaskIds, $endUtc, $startUtc]);
+                    if ($conflictStatement->fetchColumn() || $blockConflictStatement->fetchColumn()) {
+                        throw new AiPlannerException('日程在预览后发生了变化，请重新生成 AI 安排。', 409);
+                    }
+                    $storedBlocks[] = [$startUtc, $endUtc];
+                }
+                [$startUtc, $endUtc] = $storedBlocks[0];
 
                 $reminderMinutes = $task['reminder_minutes'] === null ? null : (int) $task['reminder_minutes'];
                 $reminderAt = $reminderMinutes === null
@@ -163,6 +190,9 @@ final class AiPlanner
                     $taskId,
                     $userId,
                 ]);
+                foreach ($storedBlocks as $position => [$blockStart, $blockEnd]) {
+                    $insertBlock->execute([$userId, $taskId, $blockStart, $blockEnd, $position]);
+                }
                 $appliedTaskIds[] = $taskId;
             }
 
@@ -190,6 +220,7 @@ final class AiPlanner
         DateTimeImmutable $windowEnd,
         array $tasks,
         array $busy,
+        array $preferences,
     ): array {
         $effort = (string) Config::get('OPENAI_REASONING_EFFORT', 'low');
         if (!in_array($effort, ['none', 'low', 'medium', 'high', 'xhigh'], true)) {
@@ -202,8 +233,11 @@ final class AiPlanner
             'planning_window' => [
                 'start_date' => $now->format('Y-m-d'),
                 'end_date' => $windowEnd->modify('-1 day')->format('Y-m-d'),
-                'daily_start' => substr(self::DAY_START, 0, 5),
-                'daily_end' => substr(self::DAY_END, 0, 5),
+                'daily_start' => $preferences['planningStartTime'],
+                'daily_end' => $preferences['planningEndTime'],
+                'lunch' => [$preferences['lunchStartTime'], $preferences['lunchEndTime']],
+                'dinner' => [$preferences['dinnerStartTime'], $preferences['dinnerEndTime']],
+                'buffer_minutes' => $preferences['planningBufferMinutes'],
             ],
             'tasks' => array_map(fn (array $task): array => [
                 'id' => (int) $task['id'],
@@ -211,6 +245,9 @@ final class AiPlanner
                 'notes' => $this->truncate((string) ($task['notes'] ?? ''), 500),
                 'priority' => $task['priority'],
                 'duration_minutes' => (int) $task['estimated_minutes'],
+                'focus' => (bool) $task['is_focus'],
+                'schedule_mode' => $task['schedule_mode'],
+                'allowed_window' => $task['schedule_mode'] === 'window' ? [$task['window_start_local'], $task['window_end_local']] : null,
                 'due_at' => $task['due_local'],
                 'project' => $task['project_title'] ?? null,
                 'category' => $task['category_name'] ?? null,
@@ -228,7 +265,7 @@ final class AiPlanner
                     'role' => 'developer',
                     'content' => [[
                         'type' => 'input_text',
-                        'text' => '你是人生看板的日程规划助手。只安排给出的未安排任务，不创建任务，不修改标题。优先考虑截止时间、优先级、精力切换和合理缓冲。所有任务必须完整放进 08:00 至 21:00，不能进入过去、不能重叠现有日程，也不能互相重叠。开始时间使用 15 分钟刻度。无法合理安排的任务放入 skipped。输出简洁中文理由。',
+                        'text' => '你是人生看板的今日整理助手。只调整给出的任务，不创建、不删除、不改标题。必须遵守 planning_window、午晚餐、任务时间窗、现有日程和缓冲；开始时间使用15分钟刻度。专注任务超过90分钟时拆成不超过90分钟的多个区块，区块总时长等于任务时长，区块之间至少间隔30分钟。无法合理安排的任务放入 skipped，并只建议延期或跳过。输出简洁中文理由。',
                     ]],
                 ],
                 [
@@ -256,11 +293,22 @@ final class AiPlanner
                                     'additionalProperties' => false,
                                     'properties' => [
                                         'task_id' => ['type' => 'integer'],
-                                        'start_at' => ['type' => 'string'],
+                                        'blocks' => [
+                                            'type' => 'array',
+                                            'items' => [
+                                                'type' => 'object',
+                                                'additionalProperties' => false,
+                                                'properties' => [
+                                                    'start_at' => ['type' => 'string'],
+                                                    'duration_minutes' => ['type' => 'integer'],
+                                                ],
+                                                'required' => ['start_at', 'duration_minutes'],
+                                            ],
+                                        ],
                                         'priority' => ['type' => 'string', 'enum' => ['low', 'medium', 'high']],
                                         'reason' => ['type' => 'string'],
                                     ],
-                                    'required' => ['task_id', 'start_at', 'priority', 'reason'],
+                                    'required' => ['task_id', 'blocks', 'priority', 'reason'],
                                 ],
                             ],
                             'skipped' => [
@@ -363,6 +411,7 @@ final class AiPlanner
         DateTimeImmutable $now,
         DateTimeImmutable $windowEnd,
         DateTimeZone $zone,
+        array $preferences,
     ): array {
         $taskMap = [];
         foreach ($tasks as $task) {
@@ -386,38 +435,82 @@ final class AiPlanner
             }
             $seen[$taskId] = true;
             $task = $taskMap[$taskId];
-            try {
-                $start = $this->parseModelDate((string) ($item['start_at'] ?? ''), $zone);
-            } catch (AiPlannerException $error) {
-                $skipped[] = ['taskId' => $taskId, 'title' => $task['title'], 'reason' => $error->getMessage()];
-                continue;
-            }
-            $end = $start->add(new DateInterval('PT' . max(1, (int) $task['estimated_minutes']) . 'M'));
-            $dayStart = $start->setTime(8, 0);
-            $dayEnd = $start->setTime(21, 0);
-            $invalidWindow = $start < $now || $start >= $windowEnd || $end > $windowEnd || $start < $dayStart || $end > $dayEnd;
-            $conflict = false;
-            foreach ($intervals as [$busyStart, $busyEnd]) {
-                if ($start < $busyEnd && $end > $busyStart) {
-                    $conflict = true;
+            $proposedBlocks = (array) ($item['blocks'] ?? []);
+            $validatedBlocks = [];
+            $blockIntervals = [];
+            $totalMinutes = 0;
+            $invalidReason = '';
+            foreach ($proposedBlocks as $position => $block) {
+                try {
+                    $start = $this->parseModelDate((string) ($block['start_at'] ?? ''), $zone);
+                } catch (AiPlannerException $error) {
+                    $invalidReason = $error->getMessage();
                     break;
                 }
+                $minutes = (int) ($block['duration_minutes'] ?? 0);
+                if ($minutes < 1 || ((bool) $task['is_focus'] && (int) $task['estimated_minutes'] > 90 && $minutes > 90)) {
+                    $invalidReason = '专注区块长度不符合规则。';
+                    break;
+                }
+                $end = $start->add(new DateInterval('PT' . $minutes . 'M'));
+                [$startHour, $startMinute] = array_map('intval', explode(':', $preferences['planningStartTime']));
+                [$endHour, $endMinute] = array_map('intval', explode(':', $preferences['planningEndTime']));
+                $dayStart = $start->setTime($startHour, $startMinute);
+                $dayEnd = $start->setTime($endHour, $endMinute);
+                if ($start < $now || $start >= $windowEnd || $end > $windowEnd || $start < $dayStart || $end > $dayEnd) {
+                    $invalidReason = '建议时间不在今天的可安排范围内。';
+                    break;
+                }
+                if ($task['schedule_mode'] === 'window' && !$this->insideTaskWindow($start, $end, $task)) {
+                    $invalidReason = '建议时间超出了任务自己的时间窗。';
+                    break;
+                }
+                foreach ([...$intervals, ...$blockIntervals] as [$busyStart, $busyEnd]) {
+                    $buffer = new DateInterval('PT' . max(0, (int) $preferences['planningBufferMinutes']) . 'M');
+                    if ($start < $busyEnd->add($buffer) && $end->add($buffer) > $busyStart) {
+                        $invalidReason = '建议时间与现有日程或缓冲时间冲突。';
+                        break 2;
+                    }
+                }
+                if ($position > 0) {
+                    $previousEnd = $blockIntervals[$position - 1][1];
+                    if ($start->getTimestamp() - $previousEnd->getTimestamp() < 1800) {
+                        $invalidReason = '拆分的专注区块之间至少需要休息 30 分钟。';
+                        break;
+                    }
+                }
+                $totalMinutes += $minutes;
+                $blockIntervals[] = [$start, $end];
+                $validatedBlocks[] = [
+                    'startAt' => $start->format(DATE_ATOM),
+                    'endAt' => $end->format(DATE_ATOM),
+                    'duration' => $minutes,
+                ];
             }
-            if ($invalidWindow || $conflict) {
+            if ($proposedBlocks === [] || $totalMinutes !== (int) $task['estimated_minutes']) {
+                $invalidReason = $invalidReason ?: '建议区块的总时长与任务时长不一致。';
+            }
+            if (!(bool) $task['is_focus'] && count($validatedBlocks) > 1) {
+                $invalidReason = '非专注任务不需要拆分。';
+            }
+            if ($invalidReason !== '') {
                 $skipped[] = [
                     'taskId' => $taskId,
                     'title' => $task['title'],
-                    'reason' => $conflict ? '建议时间与现有日程冲突。' : '建议时间不在可安排范围内。',
+                    'reason' => $invalidReason,
                 ];
                 continue;
             }
 
-            $intervals[] = [$start, $end];
+            array_push($intervals, ...$blockIntervals);
+            $firstBlock = $validatedBlocks[0];
+            $lastBlock = $validatedBlocks[count($validatedBlocks) - 1];
             $items[] = [
                 'taskId' => $taskId,
                 'title' => $task['title'],
-                'startAt' => $start->format(DATE_ATOM),
-                'endAt' => $end->format(DATE_ATOM),
+                'startAt' => $firstBlock['startAt'],
+                'endAt' => $lastBlock['endAt'],
+                'blocks' => $validatedBlocks,
                 'duration' => (int) $task['estimated_minutes'],
                 'priority' => $this->priority((string) ($item['priority'] ?? $task['priority'])),
                 'reason' => $this->truncate(trim((string) ($item['reason'] ?? '根据截止时间和优先级安排。')), 240),
@@ -439,29 +532,36 @@ final class AiPlanner
 
         usort($items, static fn (array $left, array $right): int => strcmp($left['startAt'], $right['startAt']));
         return [
-            'summary' => $this->truncate(trim((string) ($proposal['summary'] ?? '已经按优先级整理了接下来一周。')), 300),
+            'summary' => $this->truncate(trim((string) ($proposal['summary'] ?? '已经按优先级整理了今天。')), 300),
             'items' => $items,
             'skipped' => $skipped,
         ];
     }
 
-    private function sourceTasks(PDO $db, int $userId, string $timezone): array
+    private function sourceTasks(PDO $db, int $userId, string $timezone, DateTimeImmutable $today, DateTimeImmutable $windowEnd): array
     {
+        $startUtc = $today->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $endUtc = $windowEnd->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $nearDueUtc = $windowEnd->modify('+2 days')->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $statement = $db->prepare(
             'SELECT tasks.*, projects.title AS project_title, categories.name AS category_name
              FROM tasks
              LEFT JOIN projects ON projects.id = tasks.project_id
              LEFT JOIN categories ON categories.id = tasks.category_id
-             WHERE tasks.user_id = ? AND tasks.status = "inbox" AND tasks.start_at IS NULL
+             WHERE tasks.user_id = ? AND tasks.status NOT IN ("completed", "cancelled") AND tasks.schedule_mode != "fixed"
+               AND ((tasks.start_at >= ? AND tasks.start_at < ?)
+                    OR (tasks.status = "inbox" AND tasks.start_at IS NULL AND tasks.due_at IS NOT NULL AND tasks.due_at < ?))
              ORDER BY FIELD(tasks.priority, "high", "medium", "low"), tasks.due_at IS NULL, tasks.due_at, tasks.created_at
              LIMIT ' . self::MAX_SOURCE_TASKS
         );
-        $statement->execute([$userId]);
+        $statement->execute([$userId, $startUtc, $endUtc, $nearDueUtc]);
         $zone = $this->timezone($timezone);
         return array_map(static function (array $task) use ($zone): array {
             $task['due_local'] = $task['due_at']
                 ? (new DateTimeImmutable((string) $task['due_at'], new DateTimeZone('UTC')))->setTimezone($zone)->format(DATE_ATOM)
                 : null;
+            $task['window_start_local'] = $task['window_start'] ? substr((string) $task['window_start'], 0, 5) : null;
+            $task['window_end_local'] = $task['window_end'] ? substr((string) $task['window_end'], 0, 5) : null;
             return $task;
         }, $statement->fetchAll());
     }
@@ -472,22 +572,78 @@ final class AiPlanner
         DateTimeImmutable $windowStart,
         DateTimeImmutable $windowEnd,
         string $timezone,
+        array $excludedTaskIds,
+        array $preferences,
     ): array {
         $startUtc = $windowStart->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $endUtc = $windowEnd->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $notIn = $excludedTaskIds === [] ? '' : ' AND id NOT IN (' . implode(', ', array_fill(0, count($excludedTaskIds), '?')) . ')';
         $statement = $db->prepare(
             'SELECT title, start_at, end_at FROM tasks
              WHERE user_id = ? AND status NOT IN ("completed", "cancelled")
                AND start_at IS NOT NULL AND end_at IS NOT NULL AND start_at < ? AND end_at > ?
+               ' . $notIn . '
              ORDER BY start_at'
         );
-        $statement->execute([$userId, $endUtc, $startUtc]);
+        $statement->execute([$userId, $endUtc, $startUtc, ...$excludedTaskIds]);
         $zone = $this->timezone($timezone);
-        return array_map(static fn (array $row): array => [
+        $blocks = array_map(static fn (array $row): array => [
             'title' => $row['title'],
             'start_at' => (new DateTimeImmutable((string) $row['start_at'], new DateTimeZone('UTC')))->setTimezone($zone)->format(DATE_ATOM),
             'end_at' => (new DateTimeImmutable((string) $row['end_at'], new DateTimeZone('UTC')))->setTimezone($zone)->format(DATE_ATOM),
         ], $statement->fetchAll());
+        $blockNotIn = $excludedTaskIds === [] ? '' : ' AND task_id NOT IN (' . implode(', ', array_fill(0, count($excludedTaskIds), '?')) . ')';
+        $scheduleStatement = $db->prepare(
+            'SELECT "专注区块" AS title, start_at, end_at FROM task_schedule_blocks
+             WHERE user_id = ? AND start_at < ? AND end_at > ?' . $blockNotIn . ' ORDER BY start_at'
+        );
+        $scheduleStatement->execute([$userId, $endUtc, $startUtc, ...$excludedTaskIds]);
+        foreach ($scheduleStatement->fetchAll() as $row) {
+            $blocks[] = [
+                'title' => $row['title'],
+                'start_at' => (new DateTimeImmutable((string) $row['start_at'], new DateTimeZone('UTC')))->setTimezone($zone)->format(DATE_ATOM),
+                'end_at' => (new DateTimeImmutable((string) $row['end_at'], new DateTimeZone('UTC')))->setTimezone($zone)->format(DATE_ATOM),
+            ];
+        }
+        foreach ([['午餐', 'lunchStartTime', 'lunchEndTime'], ['晚餐', 'dinnerStartTime', 'dinnerEndTime']] as [$title, $startKey, $endKey]) {
+            $blocks[] = [
+                'title' => $title,
+                'start_at' => $windowStart->format('Y-m-d') . 'T' . $preferences[$startKey] . ':00',
+                'end_at' => $windowStart->format('Y-m-d') . 'T' . $preferences[$endKey] . ':00',
+            ];
+        }
+        return $blocks;
+    }
+
+    private function preferences(PDO $db, int $userId): array
+    {
+        $statement = $db->prepare(
+            'SELECT planning_start_time, planning_end_time, lunch_start_time, lunch_end_time,
+                    dinner_start_time, dinner_end_time, planning_buffer_minutes
+             FROM user_settings WHERE user_id = ? LIMIT 1'
+        );
+        $statement->execute([$userId]);
+        $row = $statement->fetch() ?: [];
+        return [
+            'planningStartTime' => substr((string) ($row['planning_start_time'] ?? '09:00:00'), 0, 5),
+            'planningEndTime' => substr((string) ($row['planning_end_time'] ?? '23:30:00'), 0, 5),
+            'lunchStartTime' => substr((string) ($row['lunch_start_time'] ?? '12:30:00'), 0, 5),
+            'lunchEndTime' => substr((string) ($row['lunch_end_time'] ?? '13:30:00'), 0, 5),
+            'dinnerStartTime' => substr((string) ($row['dinner_start_time'] ?? '18:00:00'), 0, 5),
+            'dinnerEndTime' => substr((string) ($row['dinner_end_time'] ?? '19:00:00'), 0, 5),
+            'planningBufferMinutes' => max(0, min(120, (int) ($row['planning_buffer_minutes'] ?? 15))),
+        ];
+    }
+
+    private function insideTaskWindow(DateTimeImmutable $start, DateTimeImmutable $end, array $task): bool
+    {
+        if (empty($task['window_start_local']) || empty($task['window_end_local'])) {
+            return false;
+        }
+        [$startHour, $startMinute] = array_map('intval', explode(':', (string) $task['window_start_local']));
+        [$endHour, $endMinute] = array_map('intval', explode(':', (string) $task['window_end_local']));
+        return $start >= $start->setTime($startHour, $startMinute)
+            && $end <= $start->setTime($endHour, $endMinute);
     }
 
     private function usageToday(PDO $db, int $userId, DateTimeImmutable $today): int

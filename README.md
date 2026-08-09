@@ -12,7 +12,9 @@
 - 每周习惯打卡、补签和休息日入口
 - 周度完成率、时间投入和文字回顾
 - 账户、柏林时区和邮件提醒设置
-- 使用 OpenAI 生成未来七天的任务安排，预览确认后再写入日程
+- 使用 OpenAI 整理今天，尊重固定时间、任务时间窗、吃饭时间和缓冲，预览确认后再写入日程
+- 循环任务支持跳过单次、暂停到指定日期、仅改本次或修改本次及以后
+- JSON 完整备份与密码确认恢复，服务器保留每日、每周和恢复前备份
 - 从 Life Plan JSON 批量导入项目、习惯和重复任务
 - 桌面侧边栏与手机底部导航
 
@@ -65,7 +67,7 @@ OPENAI_MODEL="gpt-5.4-mini"
 OPENAI_DAILY_LIMIT=2
 ```
 
-AI 每次只读取尚未安排的任务和未来七天的忙碌时间，先生成预览，只有点击“采用安排”后才会修改任务。建议的有效期为 30 分钟；每日调用上限可通过 `OPENAI_DAILY_LIMIT` 调整。
+AI 每次只整理今天的未完成任务，并可纳入临近截止日期的收集箱任务。固定任务不会移动，时间窗任务只会在自己的范围内调整；超过 90 分钟的专注任务可以拆成多个区块。建议的有效期为 30 分钟，只有点击“采用安排”后才会修改任务；每日调用上限可通过 `OPENAI_DAILY_LIMIT` 调整。
 
 口述计划可以按照 [Life Plan JSON 格式](docs/PLAN_IMPORT.md)整理，然后在“设置 → 数据 → 计划导入”中粘贴或选择文件。示例见 [`public/examples/sakura-daily-routine-v3.json`](public/examples/sakura-daily-routine-v3.json)。导入只追加数据，不会清空现有看板；同一个 `importKey` 不能重复导入，导入后可在数据设置中整批撤销。
 
@@ -74,3 +76,11 @@ AI 每次只读取尚未安排的任务和未来七天的忙碌时间，先生�
 ```bash
 php /www/wwwroot/life.snowmoon1824.top/server/scripts/send-reminders.php
 ```
+
+自动数据备份需要再添加一个“Shell 脚本”计划任务，每天凌晨 03:15 执行：
+
+```bash
+su -s /bin/bash -c '/www/server/php/83/bin/php /www/wwwroot/life.snowmoon1824.top/server/scripts/create-backup.php' www
+```
+
+脚本每天保留最近 7 份每日备份，并在星期日额外生成一份每周备份，保留最近 4 份。备份位于 `server/storage/backups`，不在网站公开目录中；也可以在“设置 → 数据”中创建、下载或恢复备份。

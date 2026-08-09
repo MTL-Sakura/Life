@@ -9,7 +9,7 @@ use DateTimeZone;
 
 final class Views
 {
-    public static function task(array $row, string $timezone, array $subtasks = [], ?array $focusSession = null): array
+    public static function task(array $row, string $timezone, array $subtasks = [], ?array $focusSession = null, array $scheduleBlocks = []): array
     {
         $start = self::localDate($row['start_at'] ?? null, $timezone);
         $end = self::localDate($row['end_at'] ?? null, $timezone);
@@ -48,6 +48,25 @@ final class Views
             'status' => $row['status'],
             'recurrenceRule' => $row['recurrence_rule'] ?? null,
             'recurrenceSourceTaskId' => isset($row['recurrence_source_task_id']) ? (int) $row['recurrence_source_task_id'] : null,
+            'recurrenceSeriesId' => isset($row['recurrence_series_id']) ? (int) $row['recurrence_series_id'] : null,
+            'recurrencePausedUntil' => $row['recurrence_paused_until'] ?? null,
+            'skipped' => ($row['occurrence_state'] ?? 'normal') === 'skipped',
+            'scheduleMode' => $row['schedule_mode'] ?? 'flexible',
+            'windowStart' => isset($row['window_start']) ? substr((string) $row['window_start'], 0, 5) : null,
+            'windowEnd' => isset($row['window_end']) ? substr((string) $row['window_end'], 0, 5) : null,
+            'scheduleBlocks' => array_map(static function (array $block) use ($timezone): array {
+                $blockStart = self::localDate($block['start_at'], $timezone);
+                $blockEnd = self::localDate($block['end_at'], $timezone);
+                return [
+                    'id' => (int) $block['id'],
+                    'startAt' => $blockStart?->format(DATE_ATOM),
+                    'endAt' => $blockEnd?->format(DATE_ATOM),
+                    'start' => $blockStart?->format('H:i'),
+                    'end' => $blockEnd?->format('H:i'),
+                    'source' => $block['source'],
+                    'position' => (int) $block['position'],
+                ];
+            }, $scheduleBlocks),
             'reminderMinutes' => isset($row['reminder_minutes']) ? (int) $row['reminder_minutes'] : null,
             'completedAt' => $completed?->format(DATE_ATOM),
             'subtasks' => array_map(static fn (array $subtask): array => [

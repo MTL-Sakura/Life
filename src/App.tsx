@@ -47,7 +47,7 @@ import {
 } from 'lucide-react'
 import { api } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
-import type { AiPlan, BootstrapData, Category, Habit, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BackupPreview, BackupRecord, BootstrapData, Category, Habit, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
   { key: 'today' as const, label: '今日', icon: LayoutDashboard },
@@ -80,6 +80,13 @@ const defaultSettings: UserSettings = {
   overdueReminder: false,
   taskReminderMinutes: 10,
   weekStartsOn: 'monday',
+  planningStartTime: '09:00',
+  planningEndTime: '23:30',
+  lunchStartTime: '12:30',
+  lunchEndTime: '13:30',
+  dinnerStartTime: '18:00',
+  dinnerEndTime: '19:00',
+  planningBufferMinutes: 15,
 }
 
 const defaultReview: ReviewSummary = {
@@ -97,6 +104,7 @@ type TaskSubtaskDraft = Partial<Subtask> & { title: string }
 type TaskDraft = Omit<Partial<Task>, 'subtasks'> & {
   title: string
   subtasks?: TaskSubtaskDraft[]
+  updateScope?: 'single' | 'future'
 }
 
 type FocusAction = 'start' | 'pause' | 'resume' | 'end'
@@ -335,19 +343,29 @@ function taskRepeatsOnDate(task: Task, date: string) {
 
 function calendarOccurrences(tasks: Task[], dates: string[]) {
   const scheduledTasks = tasks.filter((task) => !task.unscheduled && taskCalendarDate(task))
-  const occurrences: CalendarOccurrence[] = scheduledTasks.map((task) => ({
-    key: `task-${task.id}`,
-    task,
-    date: taskCalendarDate(task) as string,
-    time: taskCalendarTime(task),
-    endTime: task.endAt?.slice(11, 16) ?? task.end ?? null,
-    projected: false,
-  }))
+  const occurrences: CalendarOccurrence[] = scheduledTasks.flatMap((task) => task.scheduleBlocks?.length
+    ? task.scheduleBlocks.map((block) => ({
+        key: `task-${task.id}-block-${block.id}`,
+        task,
+        date: block.startAt.slice(0, 10),
+        time: block.start,
+        endTime: block.end,
+        projected: false,
+      }))
+    : [{
+        key: `task-${task.id}`,
+        task,
+        date: taskCalendarDate(task) as string,
+        time: taskCalendarTime(task),
+        endTime: task.endAt?.slice(11, 16) ?? task.end ?? null,
+        projected: false,
+      }])
   const parentIds = new Set(tasks.map((task) => task.recurrenceSourceTaskId).filter((id): id is number => typeof id === 'number'))
   const leaves = scheduledTasks.filter((task) => task.recurrenceRule && !parentIds.has(task.id))
   for (const task of leaves) {
     for (const date of dates) {
       if (!taskRepeatsOnDate(task, date)) continue
+      if (task.recurrencePausedUntil && date < task.recurrencePausedUntil) continue
       occurrences.push({
         key: `repeat-${task.id}-${date}`,
         task,
@@ -385,6 +403,18 @@ function taskMoment(value?: string | null) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value))
+}
+
+function downloadJson(data: unknown, fileName: string) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 function taskScheduleLabel(task: Task) {
@@ -459,13 +489,13 @@ function AiPlannerModal({ plan, loading, applying, error, onClose, onRetry, onAp
   onApply: () => void
 }) {
   return (
-    <ModalShell title="AI 日程建议" eyebrow="SMART PLAN" onClose={onClose}>
+    <ModalShell title="整理今天" eyebrow="SMART PLAN" onClose={onClose}>
       <div className="ai-plan-body">
         {loading && (
           <div className="ai-plan-loading" role="status">
             <span className="ai-plan-spinner"><Sparkles size={24} /></span>
-            <strong>正在整理接下来一周</strong>
-            <p>会避开现有安排，并检查每项任务的预计时长。</p>
+            <strong>正在整理今天</strong>
+            <p>会避开固定安排、吃饭时间和必要缓冲。</p>
           </div>
         )}
 
@@ -485,7 +515,7 @@ function AiPlannerModal({ plan, loading, applying, error, onClose, onRetry, onAp
             <div className="ai-plan-list">
               {plan.items.map((item) => (
                 <article className="ai-plan-item" key={item.taskId}>
-                  <div className="ai-plan-time"><strong>{aiPlanDateLabel(item.startAt)}</strong><span>{aiPlanTimeLabel(item.startAt, item.endAt)}</span></div>
+                  <div className="ai-plan-time"><strong>{aiPlanDateLabel(item.startAt)}</strong>{item.blocks.map((block, index) => <span key={`${item.taskId}-${index}`}>{aiPlanTimeLabel(block.startAt, block.endAt)}</span>)}</div>
                   <span className={`priority priority-${item.priority}`}>{priorityLabels[item.priority]}</span>
                   <div className="ai-plan-copy"><strong>{item.title}</strong><p>{item.reason}</p><small>{item.duration} 分钟</small></div>
                 </article>
@@ -537,6 +567,10 @@ function TaskEditor({ task, schedule = false, projects, categories, defaultRemin
   const [isFocus, setIsFocus] = useState(task?.isFocus ?? false)
   const focusActive = task?.focusSession?.status === 'running' || task?.focusSession?.status === 'paused'
   const [recurrenceRule, setRecurrenceRule] = useState(task?.recurrenceRule ?? '')
+  const [updateScope, setUpdateScope] = useState<'single' | 'future'>('single')
+  const [scheduleMode, setScheduleMode] = useState<'fixed' | 'window' | 'flexible'>(task?.scheduleMode ?? (date ? 'fixed' : 'flexible'))
+  const [windowStart, setWindowStart] = useState(task?.windowStart ?? '09:00')
+  const [windowEnd, setWindowEnd] = useState(task?.windowEnd ?? '18:00')
   const [reminderMinutes, setReminderMinutes] = useState(task?.reminderMinutes ?? defaultReminderMinutes)
   const [subtasks, setSubtasks] = useState<Array<TaskSubtaskDraft & { clientId: string }>>(() =>
     (task?.subtasks ?? []).map((subtask) => ({ ...subtask, clientId: `saved-${subtask.id}` }))
@@ -575,6 +609,10 @@ function TaskEditor({ task, schedule = false, projects, categories, defaultRemin
         endAt: date ? `${date}T${endTime}:00` : null,
         dueAt: dueAt || null,
         recurrenceRule: date ? recurrenceRule || null : null,
+        updateScope: task?.recurrenceRule ? updateScope : undefined,
+        scheduleMode,
+        windowStart: scheduleMode === 'window' ? windowStart : null,
+        windowEnd: scheduleMode === 'window' ? windowEnd : null,
         reminderMinutes: date ? reminderMinutes : null,
         subtasks: subtasks
           .map(({ id, title: subtaskTitle, completed }) => ({ id, title: subtaskTitle.trim(), completed: Boolean(completed) }))
@@ -605,7 +643,10 @@ function TaskEditor({ task, schedule = false, projects, categories, defaultRemin
           <label><span>安排日期</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
           <div className="time-pair"><label><span>开始</span><input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} disabled={!date} /></label><label><span>结束</span><input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} disabled={!date} /></label></div>
           <label><span>截止时间</span><input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /></label>
+          <label><span>AI 调整方式</span><select value={scheduleMode} onChange={(event) => setScheduleMode(event.target.value as 'fixed' | 'window' | 'flexible')}><option value="fixed">固定，不允许移动</option><option value="window">只在时间窗内调整</option><option value="flexible">灵活安排</option></select></label>
+          {scheduleMode === 'window' && <div className="time-pair full"><label><span>最早开始</span><input type="time" value={windowStart} onChange={(event) => setWindowStart(event.target.value)} /></label><label><span>最晚结束</span><input type="time" value={windowEnd} onChange={(event) => setWindowEnd(event.target.value)} /></label></div>}
           <label><span>重复</span><select value={recurrenceRule} onChange={(event) => setRecurrenceRule(event.target.value)} disabled={!date}><option value="">不重复</option><option value="FREQ=DAILY">每天</option><option value="FREQ=WEEKLY">每周</option><option value="FREQ=MONTHLY">每月</option></select></label>
+          {task?.recurrenceRule && <label><span>修改范围</span><select value={updateScope} onChange={(event) => setUpdateScope(event.target.value as 'single' | 'future')}><option value="single">仅修改这一次</option><option value="future">这次及以后</option></select></label>}
           <label><span>提前提醒（分钟）</span><input type="number" min="0" max="10080" value={reminderMinutes} onChange={(event) => setReminderMinutes(Number(event.target.value))} disabled={!date} /></label>
           <fieldset className="subtask-editor full">
             <legend>子任务</legend>
@@ -717,7 +758,7 @@ function FocusIdleWarningDialog({ warning, secondsLeft, onContinue, onPause }: {
   )
 }
 
-function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelete, onToggle, onToggleSubtask, onFocusAction }: {
+function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelete, onToggle, onToggleSubtask, onFocusAction, onSkipOccurrence, onPauseSeries }: {
   task: Task
   idlePermission: IdlePermissionState
   onClose: () => void
@@ -727,9 +768,13 @@ function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelet
   onToggle: () => void
   onToggleSubtask: (subtask: Subtask) => void
   onFocusAction: (action: FocusAction) => Promise<boolean>
+  onSkipOccurrence: () => Promise<void>
+  onPauseSeries: (date: string) => Promise<void>
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [pauseDate, setPauseDate] = useState(shiftIsoDate(berlinIsoDate(), 1))
+  const [recurrenceBusy, setRecurrenceBusy] = useState(false)
 
   async function remove() {
     setDeleting(true)
@@ -743,9 +788,9 @@ function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelet
   return (
     <ModalShell title={task.title} eyebrow="TASK DETAIL" onClose={onClose}>
       <div className="task-detail">
-        <div className={`task-detail-status ${task.completed ? 'is-complete' : ''}`}>
+        <div className={`task-detail-status ${task.completed ? 'is-complete' : ''} ${task.skipped ? 'is-skipped' : ''}`}>
           <TaskCheck task={task} onToggle={onToggle} />
-          <button type="button" onClick={onToggle}><strong>{task.completed ? '已完成' : '标记为完成'}</strong><small>{task.completed ? '再次点击可恢复任务' : '完成后会保留这次记录'}</small></button>
+          <button type="button" onClick={onToggle} disabled={task.skipped}><strong>{task.skipped ? '已跳过' : task.completed ? '已完成' : '标记为完成'}</strong><small>{task.skipped ? '保留在历史中，不计入完成率' : task.completed ? '再次点击可恢复任务' : '完成后会保留这次记录'}</small></button>
         </div>
 
         <div className="task-detail-meta">
@@ -755,7 +800,27 @@ function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelet
           <div><Repeat2 size={17} /><span>重复</span><strong>{recurrenceLabel(task.recurrenceRule)}</strong></div>
         </div>
 
+        {(task.scheduleBlocks?.length ?? 0) > 1 && (
+          <section className="task-detail-section">
+            <div className="task-detail-heading"><h3>专注区块</h3><span>共 {task.scheduleBlocks?.length} 段</span></div>
+            <div className="schedule-block-list">
+              {task.scheduleBlocks?.map((block, index) => <div key={block.id}><strong>第 {index + 1} 段</strong><span>{taskMoment(block.startAt)}–{block.end}</span></div>)}
+            </div>
+          </section>
+        )}
+
         {task.isFocus && <FocusTimer task={task} idlePermission={idlePermission} onAction={onFocusAction} />}
+
+        {task.recurrenceRule && !task.completed && !task.skipped && (
+          <section className="task-detail-section recurrence-controls">
+            <div className="task-detail-heading"><h3>循环任务</h3><span>{task.recurrencePausedUntil ? `暂停至 ${task.recurrencePausedUntil}` : recurrenceLabel(task.recurrenceRule)}</span></div>
+            <div className="recurrence-actions">
+              <button type="button" className="outline-button" disabled={recurrenceBusy} onClick={async () => { setRecurrenceBusy(true); try { await onSkipOccurrence() } finally { setRecurrenceBusy(false) } }}>跳过这一次</button>
+              <label><span>暂停到</span><input type="date" min={shiftIsoDate(berlinIsoDate(), 1)} value={pauseDate} onChange={(event) => setPauseDate(event.target.value)} /></label>
+              <button type="button" className="outline-button" disabled={recurrenceBusy} onClick={async () => { setRecurrenceBusy(true); try { await onPauseSeries(pauseDate) } finally { setRecurrenceBusy(false) } }}><Pause size={15} />暂停系列</button>
+            </div>
+          </section>
+        )}
 
         {task.notes && <section className="task-detail-section"><h3>备注</h3><p>{task.notes}</p></section>}
 
@@ -1069,9 +1134,10 @@ function TaskCheck({ task, onToggle }: { task: Task; onToggle: (id: number) => v
   return (
     <button
       type="button"
-      className={`task-check ${task.completed ? 'checked' : ''}`}
+      className={`task-check ${task.completed ? 'checked' : ''} ${task.skipped ? 'skipped' : ''}`}
       onClick={() => onToggle(task.id)}
-      aria-label={task.completed ? '标记为未完成' : '标记为完成'}
+      disabled={task.skipped}
+      aria-label={task.skipped ? '已跳过' : task.completed ? '标记为未完成' : '标记为完成'}
     >
       {task.completed && <Check size={14} strokeWidth={3} />}
     </button>
@@ -1095,14 +1161,15 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
   const scheduled = tasks
     .filter((task) => !task.unscheduled && taskCalendarDate(task) === berlinIsoDate())
     .sort((left, right) => (taskCalendarTime(left) ?? '').localeCompare(taskCalendarTime(right) ?? ''))
-  const completed = scheduled.filter((task) => task.completed).length
-  const progress = Math.round((completed / Math.max(scheduled.length, 1)) * 100)
-  const plannedMinutes = scheduled.reduce((sum, task) => sum + task.duration, 0)
-  const focusMinutes = scheduled.filter((task) => task.isFocus).reduce((sum, task) => sum + task.duration, 0)
-  const nextTask = scheduled.find((task) => !task.completed)
+  const activeScheduled = scheduled.filter((task) => !task.skipped)
+  const completed = activeScheduled.filter((task) => task.completed).length
+  const progress = Math.round((completed / Math.max(activeScheduled.length, 1)) * 100)
+  const plannedMinutes = activeScheduled.reduce((sum, task) => sum + task.duration, 0)
+  const focusMinutes = activeScheduled.filter((task) => task.isFocus).reduce((sum, task) => sum + task.duration, 0)
+  const nextTask = activeScheduled.find((task) => !task.completed)
   const todayIndex = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)).indexOf(berlinIsoDate())
-  const rhythmLabel = scheduled.length === 0 ? '暂无安排' : progress >= 75 ? '很顺畅' : progress >= 30 ? '推进中' : '刚开始'
-  const rhythmNote = scheduled.length === 0
+  const rhythmLabel = activeScheduled.length === 0 ? '暂无安排' : progress >= 75 ? '很顺畅' : progress >= 30 ? '推进中' : '刚开始'
+  const rhythmNote = activeScheduled.length === 0
     ? { title: '今天还是空白页', copy: '先记下一件真正重要的小事就够了。' }
     : nextTask
       ? { title: '按照自己的节奏来', copy: `下一项是“${nextTask.title}”，完成后记得留一点缓冲。` }
@@ -1117,7 +1184,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
           <p>{berlinDate()}，已经完成 {completed} 件事。</p>
         </div>
         <div className="today-heading-actions">
-          <button type="button" className="outline-button ai-plan-trigger" onClick={onAiPlan}><Sparkles size={17} /> AI 安排</button>
+          <button type="button" className="outline-button ai-plan-trigger" onClick={onAiPlan}><Sparkles size={17} /> 整理今天</button>
           <div className="today-progress">
             <strong>{progress}%</strong>
             <span>今日进度</span>
@@ -1131,7 +1198,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
       <div className="today-layout">
         <div className="today-main">
           <section className="metric-strip today-metrics" aria-label="今日概览">
-            <div><CheckCircle2 size={19} /><span>任务</span><strong>{completed}/{scheduled.length}</strong></div>
+            <div><CheckCircle2 size={19} /><span>任务</span><strong>{completed}/{activeScheduled.length}</strong></div>
             <div><Clock3 size={19} /><span>计划时长</span><strong>{Math.floor(plannedMinutes / 60)}h {plannedMinutes % 60}m</strong></div>
             <div><TimerReset size={19} /><span>专注时长</span><strong>{Math.floor(focusMinutes / 60)}h {focusMinutes % 60}m</strong></div>
             <div><TrendingUp size={19} /><span>今日节奏</span><strong>{rhythmLabel}</strong></div>
@@ -1144,13 +1211,13 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
             </div>
             <div className="timeline">
               {scheduled.map((task) => (
-                <article className={`timeline-item ${task.completed ? 'is-complete' : ''}`} key={task.id}>
+                <article className={`timeline-item ${task.completed ? 'is-complete' : ''} ${task.skipped ? 'is-skipped' : ''}`} key={task.id}>
                   <div className="timeline-time"><strong>{task.start}</strong><span>{task.end}</span></div>
                   <span className="timeline-dot" style={{ borderColor: task.color, backgroundColor: task.completed ? task.color : '#fff' }} />
                   <div className="timeline-task" style={{ '--task-color': task.color } as React.CSSProperties}>
                     <TaskCheck task={task} onToggle={toggleTask} />
                     <button type="button" className="task-copy task-open-button" onClick={() => onOpenTask(task.id)}>
-                      <strong>{task.title}</strong>
+                      <strong>{task.title}{task.skipped ? ' · 已跳过' : ''}</strong>
                       <span>{task.project} · {task.duration} 分钟{task.isFocus ? ' · 专注' : ''}</span>
                     </button>
                     <span className={`priority priority-${task.priority}`}>{priorityLabels[task.priority]}</span>
@@ -1345,7 +1412,7 @@ function CalendarPage({ tasks, onNewTask, onOpenTask }: { tasks: Task[]; onNewTa
                       return occurrence.date === date && taskHour >= startHour && taskHour < endHour
                     })
                     return cellTasks.length > 0 ? <div className="calendar-event-stack">{cellTasks.map((occurrence) => (
-                      <button type="button" className={`calendar-event ${occurrence.projected ? 'is-projected' : ''}`} onClick={() => onOpenTask(occurrence.task.id)} style={{ '--event-color': occurrence.task.color } as React.CSSProperties} key={occurrence.key}><strong>{occurrence.task.title}</strong><span>{occurrence.time}–{occurrence.endTime ?? '待定'}</span></button>
+                      <button type="button" className={`calendar-event ${occurrence.projected ? 'is-projected' : ''} ${occurrence.task.skipped ? 'is-skipped' : ''}`} onClick={() => onOpenTask(occurrence.task.id)} style={{ '--event-color': occurrence.task.color } as React.CSSProperties} key={occurrence.key}><strong>{occurrence.task.title}{occurrence.task.skipped ? ' · 已跳过' : ''}</strong><span>{occurrence.time}–{occurrence.endTime ?? '待定'}</span></button>
                     ))}</div> : null
                   })()}
                 </div>
@@ -1462,6 +1529,7 @@ function HabitsPage({ habits, toggleHabit, onNewHabit }: { habits: Habit[]; togg
 function ReviewPage({ summary, tasks }: { summary: ReviewSummary; tasks: Task[] }) {
   const weekDates = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index))
   const weekTasks = tasks.filter((task) => {
+    if (task.skipped) return false
     const date = taskReviewDate(task)
     return date !== null && weekDates.includes(date)
   })
@@ -1471,7 +1539,7 @@ function ReviewPage({ summary, tasks }: { summary: ReviewSummary; tasks: Task[] 
   const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
   const completedMinutes = completedWeekTasks.reduce((sum, task) => sum + task.duration, 0)
   const daily = weekDates.map((date) => {
-    const dayTasks = tasks.filter((task) => taskReviewDate(task) === date)
+    const dayTasks = tasks.filter((task) => !task.skipped && taskReviewDate(task) === date)
     const completed = dayTasks.filter((task) => task.completed).length
     return {
       total: dayTasks.length,
@@ -1480,6 +1548,7 @@ function ReviewPage({ summary, tasks }: { summary: ReviewSummary; tasks: Task[] 
     }
   })
   const completedThisWeek = tasks.filter((task) => {
+    if (task.skipped) return false
     const date = task.completedAt?.slice(0, 10) ?? taskReviewDate(task)
     return task.completed && date !== null && weekDates.includes(date)
   })
@@ -1545,16 +1614,23 @@ function ReviewPage({ summary, tasks }: { summary: ReviewSummary; tasks: Task[] 
   )
 }
 
-function SettingsPage({ settings: initialSettings, activeSection, dataCounts, planImports, onSectionChange, onSave, onTestMail, onChangePassword, onExportData, onImportPlan, onDeletePlanImport, onLogout }: {
+function SettingsPage({ settings: initialSettings, activeSection, dataCounts, planImports, backups, onSectionChange, onSave, onTestMail, onChangePassword, onExportData, onCreateBackup, onPreviewBackup, onPreviewStoredBackup, onRestoreBackup, onRestoreStoredBackup, onDownloadStoredBackup, onImportPlan, onDeletePlanImport, onLogout }: {
   settings: UserSettings
   activeSection: SettingsSectionKey
   dataCounts: { tasks: number; projects: number; habits: number; categories: number }
   planImports: PlanImportBatch[]
+  backups: BackupRecord[]
   onSectionChange: (section: SettingsSectionKey) => void
   onSave: (settings: UserSettings) => Promise<void>
   onTestMail: () => Promise<void>
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>
   onExportData: () => Promise<void>
+  onCreateBackup: () => Promise<void>
+  onPreviewBackup: (backup: Record<string, unknown>) => Promise<BackupPreview>
+  onPreviewStoredBackup: (id: number) => Promise<BackupPreview>
+  onRestoreBackup: (backup: Record<string, unknown>, password: string) => Promise<void>
+  onRestoreStoredBackup: (id: number, password: string) => Promise<void>
+  onDownloadStoredBackup: (backup: BackupRecord) => Promise<void>
   onImportPlan: (plan: PlanImportDocument) => Promise<PlanImportCounts>
   onDeletePlanImport: (id: number) => Promise<void>
   onLogout: () => Promise<void>
@@ -1574,6 +1650,12 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, pl
   const [importError, setImportError] = useState('')
   const [importing, setImporting] = useState(false)
   const [deletingImportId, setDeletingImportId] = useState<number | null>(null)
+  const [backupData, setBackupData] = useState<Record<string, unknown> | null>(null)
+  const [backupPreview, setBackupPreview] = useState<BackupPreview | null>(null)
+  const [restoreStoredId, setRestoreStoredId] = useState<number | null>(null)
+  const [restorePassword, setRestorePassword] = useState('')
+  const [backupError, setBackupError] = useState('')
+  const [backupBusy, setBackupBusy] = useState(false)
 
   useEffect(() => setSettings(initialSettings), [initialSettings])
 
@@ -1694,6 +1776,59 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, pl
     }
   }
 
+  async function loadBackupFile(file: File) {
+    setBackupError('')
+    if (file.size > 20 * 1024 * 1024) {
+      setBackupError('备份文件不能超过 20 MB。')
+      return
+    }
+    try {
+      const parsed = JSON.parse(await file.text()) as Record<string, unknown>
+      setBackupData(parsed)
+      setBackupPreview(await onPreviewBackup(parsed))
+      setRestoreStoredId(null)
+    } catch (error) {
+      setBackupData(null)
+      setBackupPreview(null)
+      setBackupError(error instanceof Error ? error.message : '无法读取备份文件。')
+    }
+  }
+
+  async function restoreSelectedBackup() {
+    if (!restorePassword || (!backupData && restoreStoredId === null)) return
+    if (!window.confirm('恢复会完整替换当前看板数据。账户、密码和服务器密钥会保留，确认继续？')) return
+    setBackupBusy(true)
+    setBackupError('')
+    try {
+      if (backupData) await onRestoreBackup(backupData, restorePassword)
+      else await onRestoreStoredBackup(restoreStoredId as number, restorePassword)
+      setBackupData(null)
+      setBackupPreview(null)
+      setRestoreStoredId(null)
+      setRestorePassword('')
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : '恢复失败。')
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  async function selectStoredBackup(id: number) {
+    setBackupBusy(true)
+    setBackupError('')
+    try {
+      setBackupData(null)
+      setRestoreStoredId(id)
+      setBackupPreview(await onPreviewStoredBackup(id))
+    } catch (error) {
+      setRestoreStoredId(null)
+      setBackupPreview(null)
+      setBackupError(error instanceof Error ? error.message : '无法读取服务器备份。')
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
   return (
     <div className="page-content settings-page">
       <section className="page-heading"><div><p className="eyebrow">SETTINGS</p><h1>设置</h1><p>让看板按照你的生活节奏工作。</p></div></section>
@@ -1747,6 +1882,11 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, pl
                 <label><span>一周开始于</span><select value={settings.weekStartsOn} onChange={(event) => setSettings({ ...settings, weekStartsOn: event.target.value as 'monday' | 'sunday' })}><option value="monday">星期一</option><option value="sunday">星期日</option></select></label>
                 <label><span>任务默认提前提醒</span><input type="number" min="0" max="10080" value={settings.taskReminderMinutes} onChange={(event) => setSettings({ ...settings, taskReminderMinutes: Number(event.target.value) })} /></label>
                 <label><span>每日收尾时间</span><input type="time" value={settings.dailySummaryTime.slice(0, 5)} onChange={(event) => setSettings({ ...settings, dailySummaryTime: `${event.target.value}:00` })} /></label>
+                <label><span>AI 整理开始</span><input type="time" value={settings.planningStartTime} onChange={(event) => setSettings({ ...settings, planningStartTime: event.target.value })} /></label>
+                <label><span>AI 整理结束</span><input type="time" value={settings.planningEndTime} onChange={(event) => setSettings({ ...settings, planningEndTime: event.target.value })} /></label>
+                <div className="time-pair full"><label><span>午餐开始</span><input type="time" value={settings.lunchStartTime} onChange={(event) => setSettings({ ...settings, lunchStartTime: event.target.value })} /></label><label><span>午餐结束</span><input type="time" value={settings.lunchEndTime} onChange={(event) => setSettings({ ...settings, lunchEndTime: event.target.value })} /></label></div>
+                <div className="time-pair full"><label><span>晚餐开始</span><input type="time" value={settings.dinnerStartTime} onChange={(event) => setSettings({ ...settings, dinnerStartTime: event.target.value })} /></label><label><span>晚餐结束</span><input type="time" value={settings.dinnerEndTime} onChange={(event) => setSettings({ ...settings, dinnerEndTime: event.target.value })} /></label></div>
+                <label><span>任务间缓冲（分钟）</span><input type="number" min="0" max="120" step="5" value={settings.planningBufferMinutes} onChange={(event) => setSettings({ ...settings, planningBufferMinutes: Number(event.target.value) })} /></label>
               </div>
             </section>
           )}
@@ -1760,7 +1900,34 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, pl
                 <div><strong>{dataCounts.habits}</strong><span>习惯</span></div>
                 <div><strong>{dataCounts.categories}</strong><span>分类</span></div>
               </div>
-              <button type="button" className="outline-button" onClick={exportData} disabled={exporting}><Download size={16} /> {exporting ? '导出中…' : '导出 JSON 备份'}</button>
+              <div className="plan-import-actions">
+                <button type="button" className="outline-button" onClick={exportData} disabled={exporting}><Download size={16} /> {exporting ? '导出中…' : '导出 JSON 备份'}</button>
+                <button type="button" className="outline-button" onClick={() => void onCreateBackup()}><Archive size={16} /> 在服务器创建备份</button>
+              </div>
+              <div className="settings-divider" />
+              <div className="settings-title"><div><TimerReset size={19} /><div><h2>恢复完整备份</h2><p>先检查内容，再完整替换当前看板</p></div></div></div>
+              <label className="outline-button plan-file-button"><Upload size={16} /> 选择备份文件<input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadBackupFile(file); event.currentTarget.value = '' }} /></label>
+              {(backupPreview || restoreStoredId !== null) && (
+                <div className="backup-restore-panel">
+                  {backupPreview && <div><strong>备份版本 {backupPreview.schemaVersion}</strong><span>{taskMoment(backupPreview.exportedAt)} · {backupPreview.counts.tasks} 任务 · {backupPreview.counts.projects} 项目 · {backupPreview.counts.habits} 习惯</span></div>}
+                  {restoreStoredId !== null && !backupPreview && <div><strong>恢复服务器备份</strong><span>{backups.find((backup) => backup.id === restoreStoredId)?.fileName}</span></div>}
+                  <label><span>当前登录密码</span><input type="password" autoComplete="current-password" value={restorePassword} onChange={(event) => setRestorePassword(event.target.value)} /></label>
+                  <button type="button" className="danger-button" disabled={!restorePassword || backupBusy} onClick={() => void restoreSelectedBackup()}>{backupBusy ? '恢复中…' : '确认完整恢复'}</button>
+                </div>
+              )}
+              {backupError && <p className="form-error">{backupError}</p>}
+              {backups.length > 0 && (
+                <div className="backup-history">
+                  <h3>服务器备份</h3>
+                  {backups.map((backup) => (
+                    <div className="plan-import-history-row" key={backup.id}>
+                      <div><strong>{{ manual: '手动', daily: '每日', weekly: '每周', pre_restore: '恢复前' }[backup.kind]}备份</strong><span>{taskMoment(backup.createdAt)} · {(backup.sizeBytes / 1024).toFixed(1)} KB</span></div>
+                      <button type="button" className="icon-button" title="下载" aria-label="下载备份" onClick={() => void onDownloadStoredBackup(backup)}><Download size={16} /></button>
+                      <button type="button" className="outline-button" disabled={backupBusy} onClick={() => void selectStoredBackup(backup.id)}>恢复</button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="settings-divider" />
               <div className="settings-title"><div><Upload size={19} /><div><h2>计划导入</h2><p>追加项目、习惯和重复任务</p></div></div></div>
               <textarea
@@ -1841,6 +2008,7 @@ export default function App() {
     { id: 5, name: '生活', color: '#7a6b87' },
   ])
   const [planImports, setPlanImports] = useState<PlanImportBatch[]>([])
+  const [backups, setBackups] = useState<BackupRecord[]>([])
   const [settings, setSettings] = useState(defaultSettings)
   const [review, setReview] = useState(defaultReview)
   const [editor, setEditor] = useState<EditorState>(null)
@@ -1914,6 +2082,7 @@ export default function App() {
     setProjectItems(data.projects)
     setCategories(data.categories)
     setPlanImports(data.planImports ?? [])
+    setBackups(data.backups ?? [])
     setSettings(data.settings)
     setReview(data.review)
   }
@@ -1982,6 +2151,11 @@ export default function App() {
         duration,
         priority: task.priority,
         reason: task.dueAt ? '优先靠近截止时间，并保留任务间的缓冲。' : '按照优先级放入可用时段。',
+        blocks: [{
+          startAt: localDateTime(slot.date, slot.start),
+          endAt: localDateTime(slot.date, slot.start + duration),
+          duration,
+        }],
       })
     })
     if (items.length === 0) throw new Error('未来七天没有足够的空闲时间，请先调整现有日程。')
@@ -2347,19 +2521,51 @@ export default function App() {
       const data = demoMode
         ? { exportedAt: new Date().toISOString(), tasks, projects: projectItems, habits, categories, settings }
         : await api.exportData()
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `life-dashboard-${new Date().toISOString().slice(0, 10)}.json`
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      URL.revokeObjectURL(url)
+      downloadJson(data, `life-dashboard-${new Date().toISOString().slice(0, 10)}.json`)
       showToast('数据备份已导出')
     } catch (error) {
       showToast(error instanceof Error ? error.message : '数据导出失败')
     }
+  }
+
+  async function createBackup() {
+    if (demoMode) {
+      showToast('演示模式不会写入服务器备份')
+      return
+    }
+    applyBootstrap(await api.createBackup())
+    showToast('服务器备份已创建')
+  }
+
+  async function previewBackup(backup: Record<string, unknown>) {
+    if (demoMode) throw new Error('演示模式不能恢复备份。')
+    return api.previewBackup(backup)
+  }
+
+  async function previewStoredBackup(id: number) {
+    return api.previewBackup(await api.downloadStoredBackup(id))
+  }
+
+  async function downloadCurrentBeforeRestore() {
+    const current = await api.exportData()
+    downloadJson(current, `life-dashboard-before-restore-${new Date().toISOString().slice(0, 10)}.json`)
+  }
+
+  async function restoreBackup(backup: Record<string, unknown>, password: string) {
+    await downloadCurrentBeforeRestore()
+    applyBootstrap(await api.restoreBackup(backup, password))
+    showToast('完整备份已恢复')
+  }
+
+  async function restoreStoredBackup(id: number, password: string) {
+    await downloadCurrentBeforeRestore()
+    applyBootstrap(await api.restoreStoredBackup(id, password))
+    showToast('服务器备份已恢复')
+  }
+
+  async function downloadStoredBackup(backup: BackupRecord) {
+    downloadJson(await api.downloadStoredBackup(backup.id), backup.fileName)
+    showToast('服务器备份已下载')
   }
 
   async function importPlan(plan: PlanImportDocument) {
@@ -2378,11 +2584,32 @@ export default function App() {
     showToast('这次导入的数据已删除')
   }
 
+  async function skipRecurringTask(id: number) {
+    if (demoMode) {
+      setTasks((current) => current.map((task) => task.id === id ? { ...task, skipped: true, status: 'cancelled' } : task))
+    } else {
+      applyBootstrap(await api.skipRecurringTask(id))
+    }
+    setSelectedTaskId(null)
+    showToast('已跳过这一次，不会计入完成率')
+  }
+
+  async function pauseRecurringTask(id: number, pausedUntil: string) {
+    if (demoMode) {
+      setTasks((current) => current.map((task) => task.recurrenceSeriesId === tasks.find((item) => item.id === id)?.recurrenceSeriesId ? { ...task, recurrencePausedUntil: pausedUntil } : task))
+    } else {
+      applyBootstrap(await api.pauseRecurringTask(id, pausedUntil))
+    }
+    setSelectedTaskId(null)
+    showToast(`循环任务已暂停至 ${pausedUntil}`)
+  }
+
   async function saveTask(draft: TaskDraft) {
     if (!demoMode) {
       if (draft.id) {
-        const result = await api.updateTask(draft as Partial<Task> & { id: number })
+        const result = await api.updateTask(draft as Partial<Task> & { id: number; updateScope?: 'single' | 'future' })
         setTasks((current) => current.map((task) => task.id === draft.id ? result.task : task))
+        if (result.nextTask) setTasks((current) => current.some((task) => task.id === result.nextTask?.id) ? current : [...current, result.nextTask as Task])
         showToast('任务已更新')
         return
       }
@@ -2418,6 +2645,9 @@ export default function App() {
       completed: existing?.completed ?? false,
       unscheduled: !draft.startAt,
       recurrenceRule: draft.recurrenceRule,
+      scheduleMode: draft.scheduleMode,
+      windowStart: draft.windowStart,
+      windowEnd: draft.windowEnd,
       reminderMinutes: draft.reminderMinutes,
       subtasks: (draft.subtasks ?? []).map((subtask, index) => ({
         id: subtask.id ?? Date.now() + index,
@@ -2546,10 +2776,10 @@ export default function App() {
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
         {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} />}
         {page === 'review' && <ReviewPage summary={review} tasks={tasks} />}
-        {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
+        {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} backups={backups} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onCreateBackup={createBackup} onPreviewBackup={previewBackup} onPreviewStoredBackup={previewStoredBackup} onRestoreBackup={restoreBackup} onRestoreStoredBackup={restoreStoredBackup} onDownloadStoredBackup={downloadStoredBackup} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
-      {selectedTask && <TaskDetail task={selectedTask} idlePermission={idlePermission} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} />}
+      {selectedTask && <TaskDetail task={selectedTask} idlePermission={idlePermission} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} onSkipOccurrence={() => skipRecurringTask(selectedTask.id)} onPauseSeries={(date) => pauseRecurringTask(selectedTask.id, date)} />}
       {editor?.type === 'task' && <TaskEditor task={editorTask} schedule={editor.schedule} projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}
       {editor?.type === 'project' && <ProjectEditor onClose={() => setEditor(null)} onSave={saveProject} />}
       {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}

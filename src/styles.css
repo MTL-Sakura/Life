@@ -881,6 +881,12 @@ p {
   animation: check-pop 240ms ease;
 }
 
+.task-check.skipped,
+.task-detail-status.is-skipped {
+  opacity: .55;
+  filter: grayscale(1);
+}
+
 @keyframes check-pop {
   50% { transform: scale(1.18); }
 }
@@ -1394,6 +1400,77 @@ p {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.calendar-event.is-skipped {
+  opacity: .5;
+  filter: grayscale(1);
+  text-decoration: line-through;
+}
+
+.timeline-item.is-skipped {
+  opacity: .55;
+  filter: grayscale(1);
+}
+
+.recurrence-controls {
+  display: grid;
+  gap: 14px;
+}
+
+.recurrence-actions,
+.backup-restore-panel {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.recurrence-actions label,
+.backup-restore-panel label {
+  display: grid;
+  gap: 6px;
+}
+
+.backup-restore-panel {
+  padding: 16px;
+  border: 1px solid var(--line);
+  background: var(--canvas);
+}
+
+.backup-restore-panel > div {
+  display: grid;
+  gap: 4px;
+  margin-right: auto;
+}
+
+.backup-restore-panel span,
+.backup-history span {
+  color: var(--muted);
+  font-size: .84rem;
+}
+
+.backup-history {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.schedule-block-list {
+  display: grid;
+  gap: 8px;
+}
+
+.schedule-block-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+}
+
+.schedule-block-list span {
+  color: var(--muted);
 }
 
 .calendar-period,
