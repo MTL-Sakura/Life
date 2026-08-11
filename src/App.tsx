@@ -42,6 +42,7 @@ import {
   ShieldCheck,
   Sparkles,
   Square,
+  Smartphone,
   Sun,
   Sunrise,
   Sunset,
@@ -114,9 +115,12 @@ const defaultSettings: UserSettings = {
   email: '',
   timezone: 'Europe/Berlin',
   emailReminders: true,
+  pushTaskReminders: true,
   dailySummary: true,
+  pushDailySummary: true,
   dailySummaryTime: '21:30:00',
   overdueReminder: false,
+  pushOverdueReminder: false,
   taskReminderMinutes: 10,
   weekStartsOn: 'monday',
   planningStartTime: '09:00',
@@ -208,6 +212,47 @@ interface IdleDetectorInstance extends EventTarget {
 interface IdleDetectorConstructor {
   new (): IdleDetectorInstance
   requestPermission: () => Promise<'granted' | 'denied'>
+}
+
+type BrowserPushState = {
+  supported: boolean
+  ios: boolean
+  standalone: boolean
+  configured: boolean
+  permission: NotificationPermission | 'unsupported'
+  subscribed: boolean
+  subscriptionCount: number
+}
+
+function isIosDevice() {
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+}
+
+function isStandaloneApp() {
+  return window.matchMedia('(display-mode: standalone)').matches
+    || Boolean((navigator as Navigator & { standalone?: boolean }).standalone)
+}
+
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
+}
+
+function pushApplicationKey(value: string) {
+  const padding = '='.repeat((4 - value.length % 4) % 4)
+  const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const raw = window.atob(base64)
+  return Uint8Array.from([...raw].map((character) => character.charCodeAt(0)))
+}
+
+const initialBrowserPush: BrowserPushState = {
+  supported: pushSupported(),
+  ios: isIosDevice(),
+  standalone: isStandaloneApp(),
+  configured: false,
+  permission: pushSupported() ? Notification.permission : 'unsupported',
+  subscribed: false,
+  subscriptionCount: 0,
 }
 
 declare global {
@@ -2375,14 +2420,18 @@ function ReviewPage({ summary, tasks, onAiPlan }: { summary: ReviewSummary; task
   )
 }
 
-function SettingsPage({ settings: initialSettings, activeSection, dataCounts, planImports, backups, onSectionChange, onSave, onTestMail, onChangePassword, onExportData, onCreateBackup, onPreviewBackup, onPreviewStoredBackup, onRestoreBackup, onRestoreStoredBackup, onDownloadStoredBackup, onImportPlan, onDeletePlanImport, onLogout }: {
+function SettingsPage({ settings: initialSettings, browserPush, activeSection, dataCounts, planImports, backups, onSectionChange, onSave, onEnablePush, onDisablePush, onTestPush, onTestMail, onChangePassword, onExportData, onCreateBackup, onPreviewBackup, onPreviewStoredBackup, onRestoreBackup, onRestoreStoredBackup, onDownloadStoredBackup, onImportPlan, onDeletePlanImport, onLogout }: {
   settings: UserSettings
+  browserPush: BrowserPushState
   activeSection: SettingsSectionKey
   dataCounts: { tasks: number; projects: number; habits: number; categories: number }
   planImports: PlanImportBatch[]
   backups: BackupRecord[]
   onSectionChange: (section: SettingsSectionKey) => void
   onSave: (settings: UserSettings) => Promise<void>
+  onEnablePush: () => Promise<void>
+  onDisablePush: () => Promise<void>
+  onTestPush: () => Promise<void>
   onTestMail: () => Promise<void>
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>
   onExportData: () => Promise<void>
@@ -2399,6 +2448,8 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, pl
   const [settings, setSettings] = useState(initialSettings)
   const [saving, setSaving] = useState(false)
   const [testingMail, setTestingMail] = useState(false)
+  const [pushBusy, setPushBusy] = useState<'enable' | 'disable' | 'test' | null>(null)
+  const [pushError, setPushError] = useState('')
   const [changingPassword, setChangingPassword] = useState(false)
   const [passwordOpen, setPasswordOpen] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
@@ -2435,6 +2486,20 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, pl
       await onTestMail()
     } finally {
       setTestingMail(false)
+    }
+  }
+
+  async function runPushAction(action: 'enable' | 'disable' | 'test') {
+    setPushBusy(action)
+    setPushError('')
+    try {
+      if (action === 'enable') await onEnablePush()
+      else if (action === 'disable') await onDisablePush()
+      else await onTestPush()
+    } catch (error) {
+      setPushError(error instanceof Error ? error.message : '浏览器推送操作失败。')
+    } finally {
+      setPushBusy(null)
     }
   }
 
@@ -2627,7 +2692,39 @@ function SettingsPage({ settings: initialSettings, activeSection, dataCounts, pl
 
           {activeSection === 'reminders' && (
             <section className="settings-section settings-panel">
-              <div className="settings-title"><div><Bell size={19} /><div><h2>邮件提醒</h2><p>提醒将按照柏林时间发送</p></div></div></div>
+              <div className="settings-title"><div><Smartphone size={19} /><div><h2>iPhone 即时提醒</h2><p>即使看板没有打开，也能在锁屏收到通知</p></div></div></div>
+              <div className={`push-status-card ${browserPush.subscribed ? 'ready' : ''}`}>
+                <span className="push-status-icon"><Bell size={21} /></span>
+                <div>
+                  <strong>{browserPush.subscribed ? '当前 iPhone 已连接' : !browserPush.supported ? '当前浏览器不支持推送' : browserPush.ios && !browserPush.standalone ? '先添加到主屏幕' : browserPush.permission === 'denied' ? '通知权限已关闭' : browserPush.configured ? '等待开启通知' : '服务器推送尚未就绪'}</strong>
+                  <span>{browserPush.subscribed ? `共有 ${Math.max(1, browserPush.subscriptionCount)} 台设备接收提醒` : browserPush.ios && !browserPush.standalone ? 'Safari 中不能直接授权，需要从桌面图标打开人生看板。' : browserPush.permission === 'denied' ? '请在 iPhone 设置的通知列表中重新允许人生看板。' : '开启后可以发送测试通知，再关闭邮件提醒。'}</span>
+                </div>
+                <em>{browserPush.subscribed ? '已开启' : '未开启'}</em>
+              </div>
+              {browserPush.ios && !browserPush.standalone && (
+                <div className="ios-install-steps">
+                  <strong>在 iPhone 上安装</strong>
+                  <span><b>1</b> 使用 Safari 打开本站，点击底部分享按钮</span>
+                  <span><b>2</b> 选择“添加到主屏幕”，保持“作为网页 App 打开”</span>
+                  <span><b>3</b> 从桌面图标重新进入，再点击“开启通知”</span>
+                </div>
+              )}
+              <div className="push-actions">
+                {!browserPush.subscribed ? (
+                  <button type="button" className="primary-button" onClick={() => void runPushAction('enable')} disabled={pushBusy !== null || !browserPush.supported || !browserPush.configured || (browserPush.ios && !browserPush.standalone) || browserPush.permission === 'denied'}><Bell size={16} />{pushBusy === 'enable' ? '正在连接…' : '开启通知'}</button>
+                ) : (
+                  <>
+                    <button type="button" className="primary-button" onClick={() => void runPushAction('test')} disabled={pushBusy !== null}><Bell size={16} />{pushBusy === 'test' ? '发送中…' : '发送测试通知'}</button>
+                    <button type="button" className="outline-button" onClick={() => void runPushAction('disable')} disabled={pushBusy !== null}>{pushBusy === 'disable' ? '正在关闭…' : '关闭此设备'}</button>
+                  </>
+                )}
+              </div>
+              {pushError && <p className="form-error">{pushError}</p>}
+              <div className="setting-row"><div><strong>任务开始前推送</strong><span>按照每项任务的提前提醒时间发送</span></div><Toggle checked={settings.pushTaskReminders} onChange={() => setSettings({ ...settings, pushTaskReminders: !settings.pushTaskReminders })} /></div>
+              <div className="setting-row"><div><strong>每日收尾推送</strong><span>每天 {settings.dailySummaryTime.slice(0, 5)} 提醒回顾今天</span></div><Toggle checked={settings.pushDailySummary} onChange={() => setSettings({ ...settings, pushDailySummary: !settings.pushDailySummary })} /></div>
+              <div className="setting-row"><div><strong>逾期任务推送</strong><span>每天上午集中提醒一次</span></div><Toggle checked={settings.pushOverdueReminder} onChange={() => setSettings({ ...settings, pushOverdueReminder: !settings.pushOverdueReminder })} /></div>
+              <div className="settings-divider" />
+              <div className="settings-title"><div><Mail size={19} /><div><h2>邮件提醒</h2><p>手机测试成功后，可以关闭这里减少邮件打扰</p></div></div></div>
               <div className="setting-row"><div><strong>任务开始前提醒</strong><span>默认提前 {settings.taskReminderMinutes} 分钟</span></div><Toggle checked={settings.emailReminders} onChange={() => setSettings({ ...settings, emailReminders: !settings.emailReminders })} /></div>
               <div className="setting-row"><div><strong>每日收尾邮件</strong><span>每天 {settings.dailySummaryTime.slice(0, 5)} 汇总进度</span></div><Toggle checked={settings.dailySummary} onChange={() => setSettings({ ...settings, dailySummary: !settings.dailySummary })} /></div>
               <div className="setting-row"><div><strong>逾期任务提醒</strong><span>每天上午发送一次</span></div><Toggle checked={settings.overdueReminder} onChange={() => setSettings({ ...settings, overdueReminder: !settings.overdueReminder })} /></div>
@@ -2771,6 +2868,7 @@ export default function App() {
   const [planImports, setPlanImports] = useState<PlanImportBatch[]>([])
   const [backups, setBackups] = useState<BackupRecord[]>([])
   const [settings, setSettings] = useState(defaultSettings)
+  const [browserPush, setBrowserPush] = useState<BrowserPushState>(initialBrowserPush)
   const [review, setReview] = useState(defaultReview)
   const [dailyRhythm, setDailyRhythm] = useState<DailyRhythm>(() => emptyDailyRhythm())
   const [dailyFlow, setDailyFlow] = useState<'morning' | 'evening' | null>(null)
@@ -2818,6 +2916,21 @@ export default function App() {
     window.addEventListener('popstate', syncRoute)
     return () => window.removeEventListener('popstate', syncRoute)
   }, [])
+
+  useEffect(() => {
+    if (loggedIn !== true) return
+    void refreshBrowserPush()
+  }, [demoMode, loggedIn])
+
+  useEffect(() => {
+    if (loggedIn !== true || tasks.length === 0) return
+    const url = new URL(window.location.href)
+    const taskId = Number(url.searchParams.get('task'))
+    if (!Number.isInteger(taskId) || !tasks.some((task) => task.id === taskId)) return
+    setSelectedTaskId(taskId)
+    url.searchParams.delete('task')
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+  }, [loggedIn, tasks])
 
   useEffect(() => {
     if (loggedIn !== true) return
@@ -2889,6 +3002,82 @@ export default function App() {
   function showToast(message: string) {
     setToast(message)
     window.setTimeout(() => setToast(''), 2200)
+  }
+
+  async function refreshBrowserPush() {
+    const supported = pushSupported()
+    const base = {
+      supported,
+      ios: isIosDevice(),
+      standalone: isStandaloneApp(),
+      permission: supported ? Notification.permission : 'unsupported' as const,
+    }
+    if (!supported) {
+      setBrowserPush({ ...initialBrowserPush, ...base, configured: false, subscribed: false, subscriptionCount: 0 })
+      return
+    }
+    try {
+      const registration = await navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
+      const subscription = await registration.pushManager.getSubscription()
+      const config = demoMode
+        ? { configured: false, publicKey: '', subscriptionCount: 0 }
+        : await api.pushConfig()
+      setBrowserPush({ ...base, configured: config.configured, subscribed: subscription !== null, subscriptionCount: config.subscriptionCount })
+    } catch {
+      setBrowserPush({ ...initialBrowserPush, ...base, configured: false, subscribed: false, subscriptionCount: 0 })
+    }
+  }
+
+  async function enableBrowserPush() {
+    if (!pushSupported()) throw new Error('当前浏览器不支持后台推送。')
+    if (isIosDevice() && !isStandaloneApp()) throw new Error('请先把人生看板添加到主屏幕，再从桌面图标打开。')
+    if (demoMode) throw new Error('本地演示模式不会创建真实推送订阅。')
+    const config = await api.pushConfig()
+    if (!config.configured || !config.publicKey) throw new Error('服务器还没有生成推送密钥，请重新运行部署脚本。')
+    const permission = await Notification.requestPermission()
+    if (permission !== 'granted') {
+      await refreshBrowserPush()
+      throw new Error('通知权限没有开启。可以在 iPhone 设置 → 通知中重新允许。')
+    }
+    const registration = await navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
+    let subscription = await registration.pushManager.getSubscription()
+    if (subscription === null) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: pushApplicationKey(config.publicKey),
+      })
+    }
+    try {
+      const encodings = (PushManager as unknown as { supportedContentEncodings?: string[] }).supportedContentEncodings
+      await api.subscribePush(subscription.toJSON(), encodings?.[0] ?? 'aes128gcm', isIosDevice() ? 'iPhone · 主屏幕' : '浏览器设备')
+    } catch (error) {
+      await subscription.unsubscribe()
+      throw error
+    }
+    await refreshBrowserPush()
+    showToast('iPhone 即时提醒已开启')
+  }
+
+  async function disableBrowserPush() {
+    if (!pushSupported()) return
+    const registration = await navigator.serviceWorker.getRegistration('/')
+    const subscription = await registration?.pushManager.getSubscription()
+    if (subscription) {
+      if (!demoMode) await api.unsubscribePush(subscription.endpoint)
+      await subscription.unsubscribe()
+    }
+    await refreshBrowserPush()
+    showToast('已关闭这台设备的推送')
+  }
+
+  async function testBrowserPush() {
+    if (!pushSupported()) throw new Error('当前浏览器不支持后台推送。')
+    const registration = await navigator.serviceWorker.getRegistration('/')
+    const subscription = await registration?.pushManager.getSubscription()
+    if (!subscription) throw new Error('当前设备还没有开启通知。')
+    if (demoMode) throw new Error('本地演示模式不会发送真实通知。')
+    await api.testPush(subscription.endpoint)
+    showToast('测试通知已发出')
   }
 
   function demoAiPlan(scope: AiPlanScope, runtime?: RebalanceInput): AiPlan {
@@ -3913,7 +4102,7 @@ export default function App() {
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
         {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} />}
         {page === 'review' && <ReviewPage summary={review} tasks={tasks} onAiPlan={() => openAiPlanner('next_week')} />}
-        {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} backups={backups} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onCreateBackup={createBackup} onPreviewBackup={previewBackup} onPreviewStoredBackup={previewStoredBackup} onRestoreBackup={restoreBackup} onRestoreStoredBackup={restoreStoredBackup} onDownloadStoredBackup={downloadStoredBackup} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
+        {page === 'settings' && <SettingsPage settings={settings} browserPush={browserPush} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} backups={backups} onSectionChange={navigateSettings} onSave={saveSettings} onEnablePush={enableBrowserPush} onDisablePush={disableBrowserPush} onTestPush={testBrowserPush} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onCreateBackup={createBackup} onPreviewBackup={previewBackup} onPreviewStoredBackup={previewStoredBackup} onRestoreBackup={restoreBackup} onRestoreStoredBackup={restoreStoredBackup} onDownloadStoredBackup={downloadStoredBackup} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
       {selectedTask && <TaskDetail task={selectedTask} idlePermission={idlePermission} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} onSkipOccurrence={() => skipRecurringTask(selectedTask.id)} onPauseSeries={(date) => pauseRecurringTask(selectedTask.id, date)} />}

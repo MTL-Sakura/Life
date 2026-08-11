@@ -130,9 +130,12 @@ export type UserSettings = {
   email: string
   timezone: string
   emailReminders: boolean
+  pushTaskReminders: boolean
   dailySummary: boolean
+  pushDailySummary: boolean
   dailySummaryTime: string
   overdueReminder: boolean
+  pushOverdueReminder: boolean
   taskReminderMinutes: number
   weekStartsOn: 'monday' | 'sunday'
   planningStartTime: string
@@ -142,6 +145,12 @@ export type UserSettings = {
   dinnerStartTime: string
   dinnerEndTime: string
   planningBufferMinutes: number
+}
+
+export type PushConfig = {
+  configured: boolean
+  publicKey: string
+  subscriptionCount: number
 }
 
 export type DailyRhythm = {

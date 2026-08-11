@@ -166,7 +166,7 @@ final class AiPlanner
                  WHERE user_id = ? AND task_id NOT IN (' . $sourcePlaceholders . ') AND start_at < ? AND end_at > ? LIMIT 1'
             );
             $update = $db->prepare(
-                'UPDATE tasks SET status = "planned", priority = ?, start_at = ?, end_at = ?, reminder_at = ?, reminder_sent_at = NULL
+                'UPDATE tasks SET status = "planned", priority = ?, start_at = ?, end_at = ?, reminder_at = ?, reminder_sent_at = NULL, push_reminder_sent_at = NULL
                  WHERE id = ? AND user_id = ?'
             );
             $insertBlock = $db->prepare(
@@ -235,11 +235,11 @@ final class AiPlanner
             if ($proposalScope === 'rebalance') {
                 $deferTask = $db->prepare(
                     'UPDATE tasks SET status = "inbox", start_at = NULL, end_at = NULL, schedule_mode = "flexible",
-                     reminder_at = NULL, reminder_sent_at = NULL WHERE id = ? AND user_id = ?'
+                     reminder_at = NULL, reminder_sent_at = NULL, push_reminder_sent_at = NULL WHERE id = ? AND user_id = ?'
                 );
                 $skipOccurrence = $db->prepare(
                     'UPDATE tasks SET status = "cancelled", occurrence_state = "skipped", reminder_at = NULL,
-                     reminder_sent_at = NULL WHERE id = ? AND user_id = ?'
+                     reminder_sent_at = NULL, push_reminder_sent_at = NULL WHERE id = ? AND user_id = ?'
                 );
                 $recordDecision = $db->prepare(
                     'INSERT INTO daily_task_decisions (user_id, task_id, local_date, action, failure_reason, task_title)

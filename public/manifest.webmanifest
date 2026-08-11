@@ -1,0 +1,26 @@
+{
+  "id": "/",
+  "name": "人生看板",
+  "short_name": "人生看板",
+  "description": "按照自己的生活节奏安排任务、习惯与回顾。",
+  "lang": "zh-CN",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f3f0e8",
+  "theme_color": "#252923",
+  "icons": [
+    {
+      "src": "/icons/app-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/app-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

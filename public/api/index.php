@@ -6,12 +6,14 @@ use Life\Auth;
 use Life\AiPlanner;
 use Life\AiPlannerException;
 use Life\BackupManager;
+use Life\Config;
 use Life\Database;
 use Life\DateTimes;
 use Life\Http;
 use Life\Mailer;
 use Life\PlanImporter;
 use Life\PlanImportException;
+use Life\PushNotifier;
 use Life\Views;
 
 require dirname(__DIR__, 2) . '/server/bootstrap.php';
@@ -63,6 +65,78 @@ switch ($action) {
     case 'bootstrap':
         Http::requireMethod('GET');
         Http::json(bootstrapData($db, $userId, $timezone));
+
+    case 'push.config':
+        Http::requireMethod('GET');
+        $subscriptionCount = $db->prepare('SELECT COUNT(*) FROM push_subscriptions WHERE user_id = ?');
+        $subscriptionCount->execute([$userId]);
+        Http::json([
+            'configured' => PushNotifier::configured(),
+            'publicKey' => PushNotifier::configured() ? Config::get('WEB_PUSH_PUBLIC_KEY', '') : '',
+            'subscriptionCount' => (int) $subscriptionCount->fetchColumn(),
+        ]);
+
+    case 'push.subscribe':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $subscription = is_array($input['subscription'] ?? null) ? $input['subscription'] : [];
+        $keys = is_array($subscription['keys'] ?? null) ? $subscription['keys'] : [];
+        $endpoint = trim((string) ($subscription['endpoint'] ?? ''));
+        $publicKey = trim((string) ($keys['p256dh'] ?? ''));
+        $authToken = trim((string) ($keys['auth'] ?? ''));
+        $contentEncoding = trim((string) ($input['contentEncoding'] ?? 'aes128gcm'));
+        $deviceName = trim((string) ($input['deviceName'] ?? '浏览器设备'));
+        $endpointParts = parse_url($endpoint);
+        if (($endpointParts['scheme'] ?? '') !== 'https' || $publicKey === '' || $authToken === '' || strlen($endpoint) > 2048) {
+            Http::json(['error' => '浏览器推送订阅内容不完整。'], 422);
+        }
+        if (!in_array($contentEncoding, ['aes128gcm', 'aesgcm'], true)) {
+            $contentEncoding = 'aes128gcm';
+        }
+        $deviceName = function_exists('mb_substr') ? mb_substr($deviceName, 0, 100) : substr($deviceName, 0, 100);
+        $userAgent = substr((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 500);
+        $db->prepare(
+            'INSERT INTO push_subscriptions
+                (user_id, endpoint, endpoint_hash, public_key, auth_token, content_encoding, device_name, user_agent, last_seen_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())
+             ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), endpoint = VALUES(endpoint), public_key = VALUES(public_key),
+                auth_token = VALUES(auth_token), content_encoding = VALUES(content_encoding), device_name = VALUES(device_name),
+                user_agent = VALUES(user_agent), last_seen_at = UTC_TIMESTAMP(), failure_count = 0'
+        )->execute([$userId, $endpoint, hash('sha256', $endpoint, true), $publicKey, $authToken, $contentEncoding, $deviceName, $userAgent]);
+        Http::json(['ok' => true], 201);
+
+    case 'push.unsubscribe':
+        Http::requireMethod('DELETE', 'POST');
+        $input = Http::input();
+        $endpoint = trim((string) ($input['endpoint'] ?? ''));
+        if ($endpoint !== '') {
+            $db->prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint_hash = ?')
+                ->execute([$userId, hash('sha256', $endpoint, true)]);
+        }
+        Http::json(['ok' => true]);
+
+    case 'push.test':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $endpoint = trim((string) ($input['endpoint'] ?? ''));
+        if ($endpoint === '') {
+            Http::json(['error' => '当前设备尚未开启浏览器推送。'], 422);
+        }
+        try {
+            $result = (new PushNotifier())->sendToEndpoint($db, $userId, $endpoint, [
+                'title' => '人生看板通知测试',
+                'body' => '连接成功。以后的任务提醒会直接出现在这里。',
+                'url' => '/settings/reminders',
+                'tag' => 'push-test-' . gmdate('YmdHis'),
+            ]);
+            if ($result['sent'] < 1) {
+                Http::json(['error' => '测试通知没有送达，请重新开启通知后再试。'], 502);
+            }
+        } catch (Throwable $error) {
+            error_log((string) $error);
+            Http::json(['error' => '测试通知发送失败，请检查推送配置或服务器网络。'], 502);
+        }
+        Http::json(['ok' => true]);
 
     case 'tasks.create':
         Http::requireMethod('POST');
@@ -197,6 +271,7 @@ switch ($action) {
         if (array_key_exists('start_at', $updates) || array_key_exists('reminder_minutes', $updates)) {
             $updates['reminder_at'] = reminderAt($effectiveStart, $effectiveReminderMinutes === null ? null : (int) $effectiveReminderMinutes);
             $updates['reminder_sent_at'] = null;
+            $updates['push_reminder_sent_at'] = null;
         }
 
         $subtasksChanged = array_key_exists('subtasks', $input);
@@ -289,7 +364,7 @@ switch ($action) {
         $db->beginTransaction();
         try {
             createNextRecurringTask($db, $task, $timezone);
-            $db->prepare("UPDATE tasks SET status = 'cancelled', occurrence_state = 'skipped', reminder_at = NULL, reminder_sent_at = NULL WHERE id = ? AND user_id = ?")
+            $db->prepare("UPDATE tasks SET status = 'cancelled', occurrence_state = 'skipped', reminder_at = NULL, reminder_sent_at = NULL, push_reminder_sent_at = NULL WHERE id = ? AND user_id = ?")
                 ->execute([$taskId, $userId]);
             $db->commit();
         } catch (Throwable $error) {
@@ -321,7 +396,7 @@ switch ($action) {
         try {
             $db->prepare('UPDATE task_series SET paused_until = ? WHERE id = ? AND user_id = ?')->execute([$pausedUntil, $seriesId, $userId]);
             $db->prepare(
-                "UPDATE tasks SET status = 'cancelled', occurrence_state = 'skipped', reminder_at = NULL, reminder_sent_at = NULL
+                "UPDATE tasks SET status = 'cancelled', occurrence_state = 'skipped', reminder_at = NULL, reminder_sent_at = NULL, push_reminder_sent_at = NULL
                  WHERE user_id = ? AND recurrence_series_id = ? AND status != 'completed'
                    AND COALESCE(start_at, due_at, end_at) < ?"
             )->execute([$userId, $seriesId, $resumeUtc]);
@@ -700,15 +775,18 @@ switch ($action) {
                 $userId,
             ]);
             $db->prepare(
-                'INSERT INTO user_settings (user_id, email_reminders, daily_summary, daily_summary_time, overdue_reminder, task_reminder_minutes, week_starts_on, planning_start_time, planning_end_time, lunch_start_time, lunch_end_time, dinner_start_time, dinner_end_time, planning_buffer_minutes)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE email_reminders = VALUES(email_reminders), daily_summary = VALUES(daily_summary), daily_summary_time = VALUES(daily_summary_time), overdue_reminder = VALUES(overdue_reminder), task_reminder_minutes = VALUES(task_reminder_minutes), week_starts_on = VALUES(week_starts_on), planning_start_time = VALUES(planning_start_time), planning_end_time = VALUES(planning_end_time), lunch_start_time = VALUES(lunch_start_time), lunch_end_time = VALUES(lunch_end_time), dinner_start_time = VALUES(dinner_start_time), dinner_end_time = VALUES(dinner_end_time), planning_buffer_minutes = VALUES(planning_buffer_minutes)'
+                'INSERT INTO user_settings (user_id, email_reminders, push_task_reminders, daily_summary, push_daily_summary, daily_summary_time, overdue_reminder, push_overdue_reminder, task_reminder_minutes, week_starts_on, planning_start_time, planning_end_time, lunch_start_time, lunch_end_time, dinner_start_time, dinner_end_time, planning_buffer_minutes)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE email_reminders = VALUES(email_reminders), push_task_reminders = VALUES(push_task_reminders), daily_summary = VALUES(daily_summary), push_daily_summary = VALUES(push_daily_summary), daily_summary_time = VALUES(daily_summary_time), overdue_reminder = VALUES(overdue_reminder), push_overdue_reminder = VALUES(push_overdue_reminder), task_reminder_minutes = VALUES(task_reminder_minutes), week_starts_on = VALUES(week_starts_on), planning_start_time = VALUES(planning_start_time), planning_end_time = VALUES(planning_end_time), lunch_start_time = VALUES(lunch_start_time), lunch_end_time = VALUES(lunch_end_time), dinner_start_time = VALUES(dinner_start_time), dinner_end_time = VALUES(dinner_end_time), planning_buffer_minutes = VALUES(planning_buffer_minutes)'
             )->execute([
                 $userId,
                 (int) (bool) ($input['emailReminders'] ?? true),
+                (int) (bool) ($input['pushTaskReminders'] ?? true),
                 (int) (bool) ($input['dailySummary'] ?? true),
+                (int) (bool) ($input['pushDailySummary'] ?? true),
                 (string) ($input['dailySummaryTime'] ?? '21:30:00'),
                 (int) (bool) ($input['overdueReminder'] ?? false),
+                (int) (bool) ($input['pushOverdueReminder'] ?? false),
                 max(0, min(10080, (int) ($input['taskReminderMinutes'] ?? 10))),
                 in_array(($input['weekStartsOn'] ?? 'monday'), ['monday', 'sunday'], true) ? $input['weekStartsOn'] : 'monday',
                 $planningStart,
@@ -967,7 +1045,7 @@ function applyEveningDecision(PDO $db, array $task, string $choice, string $time
         if (nullableString($task['recurrence_rule'] ?? null) !== null) {
             createNextRecurringTask($db, $task, $timezone);
         }
-        $db->prepare("UPDATE tasks SET status = 'cancelled', occurrence_state = 'skipped', reminder_at = NULL, reminder_sent_at = NULL WHERE id = ? AND user_id = ?")
+        $db->prepare("UPDATE tasks SET status = 'cancelled', occurrence_state = 'skipped', reminder_at = NULL, reminder_sent_at = NULL, push_reminder_sent_at = NULL WHERE id = ? AND user_id = ?")
             ->execute([(int) $task['id'], (int) $task['user_id']]);
         return;
     }
@@ -981,7 +1059,7 @@ function applyEveningDecision(PDO $db, array $task, string $choice, string $time
         ->execute([(int) $task['id'], (int) $task['user_id']]);
 
     if ($choice === 'later') {
-        $db->prepare("UPDATE tasks SET status = 'inbox', start_at = NULL, end_at = NULL, schedule_mode = 'flexible', reminder_at = NULL, reminder_sent_at = NULL WHERE id = ? AND user_id = ?")
+        $db->prepare("UPDATE tasks SET status = 'inbox', start_at = NULL, end_at = NULL, schedule_mode = 'flexible', reminder_at = NULL, reminder_sent_at = NULL, push_reminder_sent_at = NULL WHERE id = ? AND user_id = ?")
             ->execute([(int) $task['id'], (int) $task['user_id']]);
         return;
     }
@@ -1006,7 +1084,7 @@ function applyEveningDecision(PDO $db, array $task, string $choice, string $time
     }
     $reminderMinutes = isset($task['reminder_minutes']) ? (int) $task['reminder_minutes'] : null;
     $db->prepare(
-        "UPDATE tasks SET status = 'planned', start_at = ?, end_at = ?, due_at = ?, occurrence_state = 'normal', reminder_at = ?, reminder_sent_at = NULL WHERE id = ? AND user_id = ?"
+        "UPDATE tasks SET status = 'planned', start_at = ?, end_at = ?, due_at = ?, occurrence_state = 'normal', reminder_at = ?, reminder_sent_at = NULL, push_reminder_sent_at = NULL WHERE id = ? AND user_id = ?"
     )->execute([$startUtc, $endUtc, $dueAt, reminderAt($startUtc, $reminderMinutes), (int) $task['id'], (int) $task['user_id']]);
 }
 
@@ -1224,7 +1302,7 @@ function finishRescueSession(PDO $db, array $task, int $userId, string $outcome)
             $reminderAt = $reminderMinutes === null ? null : $start->modify("-{$reminderMinutes} minutes")->format('Y-m-d H:i:s');
             $db->prepare('DELETE FROM task_schedule_blocks WHERE user_id = ? AND task_id = ?')->execute([$userId, $taskId]);
             $db->prepare(
-                "UPDATE tasks SET status = 'planned', start_at = ?, end_at = ?, reminder_at = ?, reminder_sent_at = NULL
+                "UPDATE tasks SET status = 'planned', start_at = ?, end_at = ?, reminder_at = ?, reminder_sent_at = NULL, push_reminder_sent_at = NULL
                  WHERE id = ? AND user_id = ?"
             )->execute([$start->format('Y-m-d H:i:s'), $end->format('Y-m-d H:i:s'), $reminderAt, $taskId, $userId]);
         }
@@ -1809,9 +1887,12 @@ function settingsView(array $row): array
         'email' => $row['email'] ?? '',
         'timezone' => $row['timezone'] ?? 'Europe/Berlin',
         'emailReminders' => (bool) ($row['email_reminders'] ?? true),
+        'pushTaskReminders' => (bool) ($row['push_task_reminders'] ?? true),
         'dailySummary' => (bool) ($row['daily_summary'] ?? true),
+        'pushDailySummary' => (bool) ($row['push_daily_summary'] ?? true),
         'dailySummaryTime' => $row['daily_summary_time'] ?? '21:30:00',
         'overdueReminder' => (bool) ($row['overdue_reminder'] ?? false),
+        'pushOverdueReminder' => (bool) ($row['push_overdue_reminder'] ?? false),
         'taskReminderMinutes' => (int) ($row['task_reminder_minutes'] ?? 10),
         'weekStartsOn' => $row['week_starts_on'] ?? 'monday',
         'planningStartTime' => substr((string) ($row['planning_start_time'] ?? '09:00:00'), 0, 5),

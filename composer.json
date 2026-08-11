@@ -3,10 +3,14 @@
   "description": "Single-user life dashboard PHP API",
   "type": "project",
   "require": {
-    "php": ">=8.1",
+    "php": ">=8.2",
     "ext-curl": "*",
     "ext-pdo": "*",
     "ext-json": "*",
+    "ext-mbstring": "*",
+    "ext-openssl": "*",
+    "guzzlehttp/guzzle": "^7.9",
+    "minishlink/web-push": "^11.0",
     "phpmailer/phpmailer": "^6.10"
   },
   "autoload": {

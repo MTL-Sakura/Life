@@ -1,4 +1,4 @@
-import type { AiPlan, BackupPreview, BootstrapData, EveningDecision, Habit, MorningCheckinInput, PlanImportDocument, PlanImportResult, Project, RebalanceInput, RescueInput, RescueOutcome, SessionUser, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BackupPreview, BootstrapData, EveningDecision, Habit, MorningCheckinInput, PlanImportDocument, PlanImportResult, Project, PushConfig, RebalanceInput, RescueInput, RescueOutcome, SessionUser, Subtask, Task, UserSettings } from './types'
 
 let csrfToken: string | null = null
 
@@ -53,6 +53,22 @@ export const api = {
     const result = await request<BootstrapData>('bootstrap')
     csrfToken = result.csrfToken
     return result
+  },
+
+  async pushConfig(): Promise<PushConfig> {
+    return request<PushConfig>('push.config')
+  },
+
+  async subscribePush(subscription: PushSubscriptionJSON, contentEncoding: string, deviceName: string): Promise<void> {
+    await request('push.subscribe', { method: 'POST', body: { subscription, contentEncoding, deviceName } })
+  },
+
+  async unsubscribePush(endpoint: string): Promise<void> {
+    await request('push.unsubscribe', { method: 'DELETE', body: { endpoint } })
+  },
+
+  async testPush(endpoint: string): Promise<void> {
+    await request('push.test', { method: 'POST', body: { endpoint } })
   },
 
   async createTask(input: Omit<Partial<Task>, 'subtasks'> & { title: string; subtasks?: Array<Partial<Subtask> & { title: string }> }): Promise<Task> {

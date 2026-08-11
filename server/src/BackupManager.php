@@ -13,13 +13,13 @@ use Throwable;
 
 final class BackupManager
 {
-    public const SCHEMA_VERSION = 10;
+    public const SCHEMA_VERSION = 11;
 
     public function export(PDO $db, int $userId, string $timezone): array
     {
         $queries = [
             'account' => 'SELECT username, email, display_name, timezone, created_at, updated_at FROM users WHERE id = ?',
-            'settings' => 'SELECT email_reminders, daily_summary, daily_summary_time, overdue_reminder, task_reminder_minutes, week_starts_on, planning_start_time, planning_end_time, lunch_start_time, lunch_end_time, dinner_start_time, dinner_end_time, planning_buffer_minutes, updated_at FROM user_settings WHERE user_id = ?',
+            'settings' => 'SELECT email_reminders, push_task_reminders, daily_summary, push_daily_summary, daily_summary_time, overdue_reminder, push_overdue_reminder, task_reminder_minutes, week_starts_on, planning_start_time, planning_end_time, lunch_start_time, lunch_end_time, dinner_start_time, dinner_end_time, planning_buffer_minutes, updated_at FROM user_settings WHERE user_id = ?',
             'categories' => 'SELECT id, name, color, created_at FROM categories WHERE user_id = ? ORDER BY id',
             'projects' => 'SELECT * FROM projects WHERE user_id = ? ORDER BY id',
             'projectStages' => 'SELECT project_stages.* FROM project_stages INNER JOIN projects ON projects.id = project_stages.project_id WHERE projects.user_id = ? ORDER BY project_stages.project_id, project_stages.position',
@@ -30,7 +30,7 @@ final class BackupManager
             'subtasks' => 'SELECT subtasks.* FROM subtasks INNER JOIN tasks ON tasks.id = subtasks.task_id WHERE tasks.user_id = ? ORDER BY subtasks.task_id, subtasks.position',
             'habits' => 'SELECT * FROM habits WHERE user_id = ? ORDER BY id',
             'habitLogs' => 'SELECT habit_logs.* FROM habit_logs INNER JOIN habits ON habits.id = habit_logs.habit_id WHERE habits.user_id = ? ORDER BY habit_logs.habit_id, habit_logs.log_date',
-            'notifications' => 'SELECT type, reference_key, sent_at, created_at FROM notification_logs WHERE user_id = ? ORDER BY id',
+            'notifications' => 'SELECT type, channel, reference_key, sent_at, created_at FROM notification_logs WHERE user_id = ? ORDER BY id',
             'aiPlans' => 'SELECT id, status, model, source_task_ids, target_start_date, target_end_date, proposal_json, error_message, input_tokens, output_tokens, expires_at, applied_at, created_at, updated_at FROM ai_plans WHERE user_id = ? ORDER BY id',
             'planImports' => 'SELECT id, import_key, document_name, imported_counts, created_at FROM plan_imports WHERE user_id = ? ORDER BY id',
             'planImportItems' => 'SELECT plan_import_items.id, plan_import_items.plan_import_id, plan_import_items.entity_type, plan_import_items.entity_id, plan_import_items.created_at FROM plan_import_items INNER JOIN plan_imports ON plan_imports.id = plan_import_items.plan_import_id WHERE plan_imports.user_id = ? ORDER BY plan_import_items.id',
@@ -159,13 +159,13 @@ final class BackupManager
             $this->insertRows($db, 'projects', (array) ($data['projects'] ?? []), ['id', 'user_id', 'title', 'description', 'area', 'color', 'status', 'progress', 'due_at', 'current_stage', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'project_stages', (array) ($data['projectStages'] ?? []), ['id', 'project_id', 'title', 'position', 'completed', 'created_at']);
             $this->insertRows($db, 'task_series', (array) ($data['taskSeries'] ?? []), ['id', 'user_id', 'recurrence_rule', 'paused_until', 'created_at', 'updated_at'], $userId);
-            $this->insertRows($db, 'tasks', (array) ($data['tasks'] ?? []), ['id', 'user_id', 'project_id', 'category_id', 'title', 'notes', 'status', 'priority', 'start_at', 'end_at', 'due_at', 'estimated_minutes', 'actual_minutes', 'is_focus', 'recurrence_rule', 'recurrence_source_task_id', 'recurrence_series_id', 'occurrence_state', 'schedule_mode', 'window_start', 'window_end', 'reminder_minutes', 'reminder_at', 'reminder_sent_at', 'completed_at', 'created_at', 'updated_at'], $userId);
+            $this->insertRows($db, 'tasks', (array) ($data['tasks'] ?? []), ['id', 'user_id', 'project_id', 'category_id', 'title', 'notes', 'status', 'priority', 'start_at', 'end_at', 'due_at', 'estimated_minutes', 'actual_minutes', 'is_focus', 'recurrence_rule', 'recurrence_source_task_id', 'recurrence_series_id', 'occurrence_state', 'schedule_mode', 'window_start', 'window_end', 'reminder_minutes', 'reminder_at', 'reminder_sent_at', 'push_reminder_sent_at', 'completed_at', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'task_schedule_blocks', (array) ($data['scheduleBlocks'] ?? []), ['id', 'user_id', 'task_id', 'start_at', 'end_at', 'source', 'position', 'created_at'], $userId);
             $this->insertRows($db, 'subtasks', (array) ($data['subtasks'] ?? []), ['id', 'task_id', 'title', 'completed', 'position', 'created_at']);
             $this->insertRows($db, 'focus_sessions', (array) ($data['focusSessions'] ?? []), ['id', 'user_id', 'task_id', 'session_type', 'status', 'planned_seconds', 'rescue_reason', 'rescue_step', 'rescue_outcome', 'elapsed_seconds', 'started_at', 'last_resumed_at', 'ended_at', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'habits', (array) ($data['habits'] ?? []), ['id', 'user_id', 'name', 'description', 'color', 'frequency_type', 'target_count', 'schedule_days', 'start_date', 'reminder_time', 'allow_makeup', 'is_active', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'habit_logs', (array) ($data['habitLogs'] ?? []), ['id', 'habit_id', 'log_date', 'status', 'note', 'completed_at', 'created_at']);
-            $this->insertRows($db, 'notification_logs', (array) ($data['notifications'] ?? []), ['id', 'user_id', 'type', 'reference_key', 'sent_at', 'created_at'], $userId);
+            $this->insertRows($db, 'notification_logs', (array) ($data['notifications'] ?? []), ['id', 'user_id', 'type', 'channel', 'reference_key', 'sent_at', 'created_at'], $userId);
             $this->insertRows($db, 'ai_plans', (array) ($data['aiPlans'] ?? []), ['id', 'user_id', 'status', 'model', 'source_task_ids', 'target_start_date', 'target_end_date', 'proposal_json', 'error_message', 'input_tokens', 'output_tokens', 'expires_at', 'applied_at', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'plan_imports', (array) ($data['planImports'] ?? []), ['id', 'user_id', 'import_key', 'document_name', 'imported_counts', 'created_at'], $userId);
             $this->insertRows($db, 'plan_import_items', (array) ($data['planImportItems'] ?? []), ['id', 'plan_import_id', 'entity_type', 'entity_id', 'created_at']);
@@ -194,8 +194,10 @@ final class BackupManager
     private function replaceSettings(PDO $db, array $settings): void
     {
         $defaults = [
-            'email_reminders' => 1, 'daily_summary' => 1, 'daily_summary_time' => '21:30:00',
-            'overdue_reminder' => 0, 'task_reminder_minutes' => 10, 'week_starts_on' => 'monday',
+            'email_reminders' => 1, 'push_task_reminders' => 1,
+            'daily_summary' => 1, 'push_daily_summary' => 1, 'daily_summary_time' => '21:30:00',
+            'overdue_reminder' => 0, 'push_overdue_reminder' => 0,
+            'task_reminder_minutes' => 10, 'week_starts_on' => 'monday',
             'theme' => 'light', 'planning_start_time' => '09:00:00', 'planning_end_time' => '23:30:00',
             'lunch_start_time' => '12:30:00', 'lunch_end_time' => '13:30:00',
             'dinner_start_time' => '18:00:00', 'dinner_end_time' => '19:00:00', 'planning_buffer_minutes' => 15,
