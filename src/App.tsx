@@ -27,6 +27,7 @@ import {
   LogOut,
   Mail,
   Menu,
+  Minus,
   Moon,
   MoreHorizontal,
   Plus,
@@ -52,7 +53,7 @@ import {
 } from 'lucide-react'
 import { api } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
-import type { AiPlan, BackupPreview, BackupRecord, BootstrapData, Category, DailyRhythm, EveningDecision, Habit, MorningCheckinInput, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BackupPreview, BackupRecord, BootstrapData, Category, DailyRhythm, EveningDecision, FailureReason, Habit, MorningCheckinInput, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
   { key: 'now' as const, label: '现在', icon: Play },
@@ -76,6 +77,15 @@ const pageNames: Record<PageKey, string> = {
 }
 
 const priorityLabels = { high: '高', medium: '中', low: '低' }
+const failureReasonLabels: Record<FailureReason, string> = {
+  time: '时间不够',
+  energy: '精力不足',
+  interrupted: '临时有事',
+  difficult: '任务太难',
+  resistance: '不想开始',
+  changed: '计划改变',
+}
+const failureReasonOptions = Object.entries(failureReasonLabels) as Array<[FailureReason, string]>
 
 const defaultSettings: UserSettings = {
   displayName: 'Sakura',
@@ -116,6 +126,11 @@ const defaultReview: ReviewSummary = {
   averageMorningEnergy: null,
   averageEveningEnergy: null,
   averageWakeTime: null,
+  calibrationSamples: 0,
+  calibrationEstimatedMinutes: 0,
+  calibrationActualMinutes: 0,
+  estimateAccuracy: null,
+  failureReasons: [],
   carryovers: { tomorrow: 0, later: 0, drop: 0 },
   days: [],
 }
@@ -608,6 +623,59 @@ function ModalShell({ title, eyebrow, onClose, children }: { title: string; eyeb
   )
 }
 
+function taskFocusElapsedSeconds(task: Task) {
+  const session = task.focusSession
+  if (!session) return 0
+  const running = session.status === 'running' && session.lastResumedAt
+    ? Math.max(0, Math.floor((Date.now() - Date.parse(session.lastResumedAt)) / 1000))
+    : 0
+  return Math.max(0, session.elapsedSeconds + running)
+}
+
+function CompletionCalibrationModal({ task, onClose, onSave }: { task: Task; onClose: () => void; onSave: (actualMinutes: number) => Promise<void> }) {
+  const focusMinutes = taskFocusElapsedSeconds(task) > 0 ? Math.max(1, Math.round(taskFocusElapsedSeconds(task) / 60)) : 0
+  const [actualMinutes, setActualMinutes] = useState((task.actualMinutes ?? focusMinutes) || task.duration)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const difference = actualMinutes - task.duration
+
+  function adjust(delta: number) {
+    setActualMinutes((current) => Math.max(1, Math.min(1440, current + delta)))
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    setSaving(true)
+    setError('')
+    try {
+      await onSave(Math.max(1, Math.min(1440, actualMinutes)))
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '完成记录保存失败。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <ModalShell title="完成这件事" eyebrow="CALIBRATION" onClose={onClose}>
+      <form className="completion-calibration" onSubmit={submit}>
+        <div className="completion-task"><span style={{ backgroundColor: task.color }} /><div><strong>{task.title}</strong><small>预计 {task.duration} 分钟{focusMinutes > 0 ? ` · 已计时 ${focusMinutes} 分钟` : ''}</small></div></div>
+        <div className="actual-time-field">
+          <div><span>实际用了多久？</span><small>确认一次，后续安排会更贴近真实节奏。</small></div>
+          <div className="minute-stepper">
+            <button type="button" className="icon-button" onClick={() => adjust(-5)} aria-label="减少 5 分钟" title="减少 5 分钟"><Minus size={16} /></button>
+            <label><input type="number" min="1" max="1440" value={actualMinutes} onChange={(event) => setActualMinutes(Math.max(1, Math.min(1440, Number(event.target.value) || 1)))} /><span>分钟</span></label>
+            <button type="button" className="icon-button" onClick={() => adjust(5)} aria-label="增加 5 分钟" title="增加 5 分钟"><Plus size={16} /></button>
+          </div>
+        </div>
+        <div className={`calibration-difference ${difference === 0 ? 'is-even' : difference > 0 ? 'is-over' : 'is-under'}`}><Clock3 size={16} /><span>{difference === 0 ? '这次估时刚刚好。' : difference > 0 ? `比预计多用了 ${difference} 分钟。` : `比预计少用了 ${Math.abs(difference)} 分钟。`}</span></div>
+        {error && <p className="form-error">{error}</p>}
+        <footer className="modal-actions"><button type="button" className="outline-button" onClick={onClose} disabled={saving}>取消</button><button type="submit" className="primary-button" disabled={saving}><Check size={16} />{saving ? '保存中…' : '确认完成'}</button></footer>
+      </form>
+    </ModalShell>
+  )
+}
+
 function aiPlanDateLabel(startAt: string) {
   return new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Europe/Berlin',
@@ -946,7 +1014,7 @@ function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelet
 
         <div className="task-detail-meta">
           <div><CalendarClock size={17} /><span>时间</span><strong>{taskScheduleLabel(task)}</strong></div>
-          <div><Clock3 size={17} /><span>预计</span><strong>{task.duration} 分钟</strong></div>
+          <div><Clock3 size={17} /><span>{task.completed && task.actualMinutes ? '预计 / 实际' : '预计'}</span><strong>{task.completed && task.actualMinutes ? `${task.duration} / ${task.actualMinutes} 分钟` : `${task.duration} 分钟`}</strong></div>
           <div><FolderKanban size={17} /><span>项目</span><strong>{task.project}</strong></div>
           <div><Repeat2 size={17} /><span>重复</span><strong>{recurrenceLabel(task.recurrenceRule)}</strong></div>
         </div>
@@ -1550,14 +1618,19 @@ function EveningCheckinModal({ rhythm, tasks, onClose, onSave }: {
   const [energy, setEnergy] = useState(rhythm.eveningEnergy ?? 3)
   const [reflection, setReflection] = useState(rhythm.reflection)
   const [decisions, setDecisions] = useState<Record<number, EveningDecision['action']>>(() => Object.fromEntries(unfinished.map((task) => [task.id, task.recurrenceRule ? 'drop' : 'tomorrow'])))
+  const [reasons, setReasons] = useState<Partial<Record<number, FailureReason>>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   async function submit() {
+    if (unfinished.some((task) => !reasons[task.id])) {
+      setError('请为每个未完成任务选择一个原因。')
+      return
+    }
     setBusy(true)
     setError('')
     try {
-      await onSave(energy, reflection, unfinished.map((task) => ({ taskId: task.id, action: decisions[task.id] ?? 'later' })))
+      await onSave(energy, reflection, unfinished.map((task) => ({ taskId: task.id, action: decisions[task.id] ?? 'later', reason: reasons[task.id] as FailureReason })))
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : '今晚收尾保存失败。')
     } finally {
@@ -1575,10 +1648,13 @@ function EveningCheckinModal({ rhythm, tasks, onClose, onSave }: {
         {unfinished.length > 0 && <section className="unfinished-decisions"><div className="task-detail-heading"><h3>未完成任务</h3><span>逐项选择去向</span></div>{unfinished.map((task) => (
           <article key={task.id}>
             <div><span style={{ backgroundColor: task.color }} /><div><strong>{task.title}</strong><small>{task.start ?? '待安排'} · {task.duration} 分钟{task.recurrenceRule ? ' · 循环' : ''}</small></div></div>
-            <div className="decision-control">
-              <button type="button" className={decisions[task.id] === 'tomorrow' ? 'active' : ''} onClick={() => setDecisions((current) => ({ ...current, [task.id]: 'tomorrow' }))}>明天</button>
-              <button type="button" className={decisions[task.id] === 'later' ? 'active' : ''} onClick={() => setDecisions((current) => ({ ...current, [task.id]: 'later' }))}>以后</button>
-              <button type="button" className={decisions[task.id] === 'drop' ? 'active' : ''} onClick={() => setDecisions((current) => ({ ...current, [task.id]: 'drop' }))}>{task.recurrenceRule ? '跳过' : '放弃'}</button>
+            <div className="decision-stack">
+              <div className="decision-control">
+                <button type="button" className={decisions[task.id] === 'tomorrow' ? 'active' : ''} onClick={() => setDecisions((current) => ({ ...current, [task.id]: 'tomorrow' }))}>明天</button>
+                <button type="button" className={decisions[task.id] === 'later' ? 'active' : ''} onClick={() => setDecisions((current) => ({ ...current, [task.id]: 'later' }))}>以后</button>
+                <button type="button" className={decisions[task.id] === 'drop' ? 'active' : ''} onClick={() => setDecisions((current) => ({ ...current, [task.id]: 'drop' }))}>{task.recurrenceRule ? '跳过' : '放弃'}</button>
+              </div>
+              <label className="failure-reason-field"><span>未完成原因</span><select value={reasons[task.id] ?? ''} onChange={(event) => setReasons((current) => ({ ...current, [task.id]: event.target.value as FailureReason }))}><option value="">请选择</option>{failureReasonOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
             </div>
           </article>
         ))}</section>}
@@ -2014,14 +2090,26 @@ function ReviewPage({ summary, tasks, onAiPlan }: { summary: ReviewSummary; task
   const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
   const completedMinutes = hasServerReview ? summary.completedMinutes : fallbackCompleted.reduce((sum, task) => sum + task.duration, 0)
   const completedThisWeek = tasks.filter((task) => task.completed && !task.skipped && weekDates.includes(task.completedAt?.slice(0, 10) ?? taskReviewDate(task) ?? ''))
+  const fallbackCalibrationTasks = completedThisWeek.filter((task) => task.actualMinutes !== null && task.actualMinutes !== undefined)
+  const fallbackCalibrationEstimated = fallbackCalibrationTasks.reduce((sum, task) => sum + task.duration, 0)
+  const fallbackCalibrationActual = fallbackCalibrationTasks.reduce((sum, task) => sum + (task.actualMinutes ?? 0), 0)
+  const fallbackCalibrationError = fallbackCalibrationTasks.reduce((sum, task) => sum + Math.abs((task.actualMinutes ?? task.duration) - task.duration), 0)
+  const calibrationSamples = hasServerReview ? summary.calibrationSamples : fallbackCalibrationTasks.length
+  const calibrationEstimatedMinutes = hasServerReview ? summary.calibrationEstimatedMinutes : fallbackCalibrationEstimated
+  const calibrationActualMinutes = hasServerReview ? summary.calibrationActualMinutes : fallbackCalibrationActual
+  const estimateAccuracy = hasServerReview
+    ? summary.estimateAccuracy
+    : calibrationEstimatedMinutes > 0
+      ? Math.max(0, Math.round(100 - (fallbackCalibrationError / calibrationEstimatedMinutes) * 100))
+      : null
   const categoryMinutes = completedThisWeek.reduce<Record<string, { label: string; color: string; minutes: number }>>((result, task) => {
     const key = task.category || '未分类'
     const current = result[key] ?? { label: key, color: task.color, minutes: 0 }
-    current.minutes += task.duration
+    current.minutes += task.actualMinutes ?? task.duration
     result[key] = current
     return result
   }, {})
-  const totalCategoryMinutes = completedThisWeek.reduce((sum, task) => sum + task.duration, 0)
+  const totalCategoryMinutes = completedThisWeek.reduce((sum, task) => sum + (task.actualMinutes ?? task.duration), 0)
   const categoryInvestment = Object.values(categoryMinutes)
     .sort((left, right) => right.minutes - left.minutes)
     .map((category) => ({ ...category, value: totalCategoryMinutes > 0 ? Math.round((category.minutes / totalCategoryMinutes) * 100) : 0 }))
@@ -2032,6 +2120,9 @@ function ReviewPage({ summary, tasks, onAiPlan }: { summary: ReviewSummary; task
   const focusHours = Math.floor(summary.focusActualMinutes / 60)
   const focusMinutes = summary.focusActualMinutes % 60
   const movedCount = summary.carryovers.tomorrow + summary.carryovers.later + summary.carryovers.drop
+  const calibrationDifference = calibrationActualMinutes - calibrationEstimatedMinutes
+  const mostCommonFailure = summary.failureReasons[0]
+  const maxFailureCount = Math.max(1, ...summary.failureReasons.map((reason) => reason.count))
   const energyChange = summary.averageMorningEnergy !== null && summary.averageEveningEnergy !== null
     ? Math.round((summary.averageEveningEnergy - summary.averageMorningEnergy) * 10) / 10
     : null
@@ -2059,7 +2150,7 @@ function ReviewPage({ summary, tasks, onAiPlan }: { summary: ReviewSummary; task
         <section className="content-section category-section">
           <div className="section-title-row"><div><h2>时间投入</h2><span>按生活领域</span></div></div>
           {categoryInvestment.map((category) => <div className="category-row" key={category.label}><span className="category-dot" style={{ backgroundColor: category.color }} /><strong>{category.label}</strong><ProgressBar value={category.value} color={category.color} /><span>{Math.floor(category.minutes / 60)}h {category.minutes % 60}m</span></div>)}
-          {categoryInvestment.length === 0 && <div className="review-empty compact"><Clock3 size={20} /><strong>暂无时间投入</strong><span>只统计本周已完成任务的预计时长。</span></div>}
+          {categoryInvestment.length === 0 && <div className="review-empty compact"><Clock3 size={20} /><strong>暂无时间投入</strong><span>完成任务并确认耗时后，这里会按生活领域汇总。</span></div>}
         </section>
       </div>
       <section className="content-section rhythm-review-section">
@@ -2082,12 +2173,27 @@ function ReviewPage({ summary, tasks, onAiPlan }: { summary: ReviewSummary; task
         <div><Archive size={18} /><span>留到以后</span><strong>{summary.carryovers.later}</strong></div>
         <div><Trash2 size={18} /><span>跳过或放弃</span><strong>{summary.carryovers.drop}</strong></div>
       </section>
+      <section className="content-section plan-calibration-section">
+        <div className="section-title-row"><div><h2>计划校准</h2><span>预计与实际，以及阻碍发生在哪里</span></div><span>{calibrationSamples} 项有效记录</span></div>
+        {calibrationSamples > 0 || summary.failureReasons.length > 0 ? <div className="calibration-review-layout">
+          <div className="calibration-metrics">
+            <div><Target size={18} /><span>估时准确率</span><strong>{estimateAccuracy ?? 0}%</strong></div>
+            <div><Clock3 size={18} /><span>预计投入</span><strong>{Math.floor(calibrationEstimatedMinutes / 60)}h {calibrationEstimatedMinutes % 60}m</strong></div>
+            <div><TimerReset size={18} /><span>实际投入</span><strong>{Math.floor(calibrationActualMinutes / 60)}h {calibrationActualMinutes % 60}m</strong><small>{calibrationDifference === 0 ? '与预计一致' : calibrationDifference > 0 ? `多 ${calibrationDifference} 分钟` : `少 ${Math.abs(calibrationDifference)} 分钟`}</small></div>
+          </div>
+          <div className="failure-reason-review">
+            <div className="task-detail-heading"><h3>未完成原因</h3><span>{summary.failureReasons.reduce((sum, reason) => sum + reason.count, 0)} 次记录</span></div>
+            {summary.failureReasons.map((reason) => <div key={reason.reason}><strong>{failureReasonLabels[reason.reason]}</strong><ProgressBar value={Math.round((reason.count / maxFailureCount) * 100)} color="#b96552" /><span>{reason.count}</span></div>)}
+            {summary.failureReasons.length === 0 && <p className="empty-copy">本周还没有未完成原因记录。</p>}
+          </div>
+        </div> : <div className="review-empty compact"><TrendingUp size={20} /><strong>从下一次完成开始校准</strong><span>确认实际耗时或在晚间选择未完成原因后，这里会形成趋势。</span></div>}
+      </section>
       <section className="content-section reflection-section">
         <div className="section-title-row"><div><h2>本周观察</h2><span>根据现有记录自动整理</span></div></div>
         <div className="reflection-grid">
-          <div><strong>本周投入</strong><p>{totalCount > 0 ? `完成 ${completedCount} 项，预计投入 ${hours} 小时 ${minutes} 分钟；其中真实专注 ${focusHours} 小时 ${focusMinutes} 分钟。` : '还没有可供回顾的任务记录。'}</p></div>
+          <div><strong>本周投入</strong><p>{calibrationSamples > 0 ? `有 ${calibrationSamples} 项记录了实际耗时，合计 ${Math.floor(calibrationActualMinutes / 60)} 小时 ${calibrationActualMinutes % 60} 分钟，估时准确率 ${estimateAccuracy}%。` : totalCount > 0 ? `完成 ${completedCount} 项，预计投入 ${hours} 小时 ${minutes} 分钟；其中真实专注 ${focusHours} 小时 ${focusMinutes} 分钟。` : '还没有可供回顾的任务记录。'}</p></div>
           <div><strong>生活节奏</strong><p>{summary.averageWakeTime ? `平均 ${summary.averageWakeTime} 起床，${summary.breakfastDays} 天记录了早餐${energyChange === null ? '。' : `；从早到晚精力变化 ${energyChange > 0 ? '+' : ''}${energyChange}。`}` : '完成晨间启动后，这里会显示起床与精力趋势。'}</p></div>
-          <div><strong>下周线索</strong><p>{movedCount > 0 ? `本周有 ${movedCount} 次任务迁移；准备下周时应主动减少负荷。` : strongestCategory ? `${strongestCategory.label}投入最多，可以继续保留这个节奏。` : '继续记录几天后，这里会给出下周线索。'}</p></div>
+          <div><strong>下周线索</strong><p>{mostCommonFailure ? `最常出现的阻力是“${failureReasonLabels[mostCommonFailure.reason]}”，下周安排时会优先处理这个问题。` : movedCount > 0 ? `本周有 ${movedCount} 次任务迁移；准备下周时应主动减少负荷。` : strongestCategory ? `${strongestCategory.label}投入最多，可以继续保留这个节奏。` : '继续记录几天后，这里会给出下周线索。'}</p></div>
         </div>
       </section>
     </div>
@@ -2493,6 +2599,7 @@ export default function App() {
   const [review, setReview] = useState(defaultReview)
   const [dailyRhythm, setDailyRhythm] = useState<DailyRhythm>(() => emptyDailyRhythm())
   const [dailyFlow, setDailyFlow] = useState<'morning' | 'evening' | null>(null)
+  const [completionTaskId, setCompletionTaskId] = useState<number | null>(null)
   const [editor, setEditor] = useState<EditorState>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [quickEntry, setQuickEntry] = useState('')
@@ -2515,6 +2622,7 @@ export default function App() {
 
   const inboxCount = useMemo(() => tasks.filter((task) => !task.completed && task.unscheduled).length, [tasks])
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId), [selectedTaskId, tasks])
+  const completionTask = useMemo(() => tasks.find((task) => task.id === completionTaskId), [completionTaskId, tasks])
   const runningFocusTask = useMemo(() => tasks.find((task) => task.focusSession?.status === 'running') ?? null, [tasks])
   const editorTask = editor?.type === 'task' && editor.taskId
     ? tasks.find((task) => task.id === editor.taskId)
@@ -2773,27 +2881,55 @@ export default function App() {
     }
   }
 
-  async function toggleTask(id: number) {
-    const task = tasks.find((item) => item.id === id)
-    if (!task) return
-    const completed = !task.completed
-    setTasks((current) => current.map((item) => item.id === id ? { ...item, completed: !item.completed } : item))
+  async function persistTaskCompletion(task: Task, completed: boolean, actualMinutes?: number) {
+    const id = task.id
+    const optimisticTask: Task = {
+      ...task,
+      completed,
+      status: completed ? 'completed' : task.startAt ? 'planned' : 'inbox',
+      actualMinutes: completed ? actualMinutes ?? task.duration : null,
+      completedAt: completed ? new Date().toISOString() : null,
+      focusSession: completed && task.focusSession ? { ...task.focusSession, status: 'completed', lastResumedAt: null, endedAt: new Date().toISOString() } : task.focusSession,
+    }
+    setTasks((current) => current.map((item) => item.id === id ? optimisticTask : item))
     if (completed) showToast('完成一件，今天向前了一点')
     if (!demoMode) {
       try {
-        const result = await api.updateTask({ id, completed })
+        const result = await api.updateTask({ id, completed, ...(completed ? { actualMinutes } : {}) })
         setTasks((current) => {
           const updated = current.map((item) => item.id === id ? result.task : item)
           return result.nextTask && !updated.some((item) => item.id === result.nextTask?.id)
             ? [...updated, result.nextTask]
             : updated
         })
+        void api.bootstrap().then((data) => setReview(data.review)).catch(() => undefined)
         if (result.nextTask) showToast('已完成，下一次重复任务也安排好了')
       } catch (error) {
         setTasks((current) => current.map((item) => item.id === id ? task : item))
-        showToast(error instanceof Error ? error.message : '任务状态保存失败')
+        throw error
       }
     }
+  }
+
+  async function toggleTask(id: number) {
+    const task = tasks.find((item) => item.id === id)
+    if (!task) return
+    if (!task.completed) {
+      setCompletionTaskId(id)
+      return
+    }
+    try {
+      await persistTaskCompletion(task, false)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '任务状态保存失败')
+    }
+  }
+
+  async function completeTask(actualMinutes: number) {
+    const task = tasks.find((item) => item.id === completionTaskId)
+    if (!task) return
+    await persistTaskCompletion(task, true, actualMinutes)
+    setCompletionTaskId(null)
   }
 
   async function updateExecutionTask(task: Task, changes: Partial<Task> & { updateScope?: 'single' | 'future' }) {
@@ -2844,10 +2980,7 @@ export default function App() {
   }
 
   async function completeNowTask(task: Task) {
-    if (task.isFocus && (task.focusSession?.status === 'running' || task.focusSession?.status === 'paused')) {
-      if (!await focusTask(task.id, 'end')) return
-    }
-    await toggleTask(task.id)
+    setCompletionTaskId(task.id)
   }
 
   async function delayNowTask(task: Task, delayMinutes: number) {
@@ -3461,6 +3594,7 @@ export default function App() {
       {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}
       {dailyFlow === 'morning' && <MorningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={saveMorningCheckin} onSkip={skipMorningCheckin} />}
       {dailyFlow === 'evening' && <EveningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={closeDailyRhythm} />}
+      {completionTask && <CompletionCalibrationModal task={completionTask} onClose={() => setCompletionTaskId(null)} onSave={completeTask} />}
       {aiPlannerOpen && <AiPlannerModal scope={aiPlanScope} plan={aiPlan} loading={aiPlanLoading} applying={aiPlanApplying} error={aiPlanError} onClose={() => setAiPlannerOpen(false)} onRetry={() => void generateAiPlan(aiPlanScope)} onApply={() => void applyAiPlan()} />}
       {toast && <div className="toast"><CheckCircle2 size={17} />{toast}</div>}
       {idleWarning && <FocusIdleWarningDialog warning={idleWarning} secondsLeft={idleSecondsLeft} onContinue={dismissIdleWarning} onPause={() => void pauseForIdle(idleWarning)} />}

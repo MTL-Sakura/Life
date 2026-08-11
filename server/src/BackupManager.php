@@ -13,7 +13,7 @@ use Throwable;
 
 final class BackupManager
 {
-    public const SCHEMA_VERSION = 8;
+    public const SCHEMA_VERSION = 9;
 
     public function export(PDO $db, int $userId, string $timezone): array
     {
@@ -159,7 +159,7 @@ final class BackupManager
             $this->insertRows($db, 'projects', (array) ($data['projects'] ?? []), ['id', 'user_id', 'title', 'description', 'area', 'color', 'status', 'progress', 'due_at', 'current_stage', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'project_stages', (array) ($data['projectStages'] ?? []), ['id', 'project_id', 'title', 'position', 'completed', 'created_at']);
             $this->insertRows($db, 'task_series', (array) ($data['taskSeries'] ?? []), ['id', 'user_id', 'recurrence_rule', 'paused_until', 'created_at', 'updated_at'], $userId);
-            $this->insertRows($db, 'tasks', (array) ($data['tasks'] ?? []), ['id', 'user_id', 'project_id', 'category_id', 'title', 'notes', 'status', 'priority', 'start_at', 'end_at', 'due_at', 'estimated_minutes', 'is_focus', 'recurrence_rule', 'recurrence_source_task_id', 'recurrence_series_id', 'occurrence_state', 'schedule_mode', 'window_start', 'window_end', 'reminder_minutes', 'reminder_at', 'reminder_sent_at', 'completed_at', 'created_at', 'updated_at'], $userId);
+            $this->insertRows($db, 'tasks', (array) ($data['tasks'] ?? []), ['id', 'user_id', 'project_id', 'category_id', 'title', 'notes', 'status', 'priority', 'start_at', 'end_at', 'due_at', 'estimated_minutes', 'actual_minutes', 'is_focus', 'recurrence_rule', 'recurrence_source_task_id', 'recurrence_series_id', 'occurrence_state', 'schedule_mode', 'window_start', 'window_end', 'reminder_minutes', 'reminder_at', 'reminder_sent_at', 'completed_at', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'task_schedule_blocks', (array) ($data['scheduleBlocks'] ?? []), ['id', 'user_id', 'task_id', 'start_at', 'end_at', 'source', 'position', 'created_at'], $userId);
             $this->insertRows($db, 'subtasks', (array) ($data['subtasks'] ?? []), ['id', 'task_id', 'title', 'completed', 'position', 'created_at']);
             $this->insertRows($db, 'focus_sessions', (array) ($data['focusSessions'] ?? []), ['id', 'user_id', 'task_id', 'status', 'planned_seconds', 'elapsed_seconds', 'started_at', 'last_resumed_at', 'ended_at', 'created_at', 'updated_at'], $userId);
@@ -170,7 +170,7 @@ final class BackupManager
             $this->insertRows($db, 'plan_imports', (array) ($data['planImports'] ?? []), ['id', 'user_id', 'import_key', 'document_name', 'imported_counts', 'created_at'], $userId);
             $this->insertRows($db, 'plan_import_items', (array) ($data['planImportItems'] ?? []), ['id', 'plan_import_id', 'entity_type', 'entity_id', 'created_at']);
             $this->insertRows($db, 'daily_checkins', (array) ($data['dailyCheckins'] ?? []), ['id', 'user_id', 'local_date', 'wake_time', 'had_breakfast', 'morning_energy', 'daily_focus_task_id', 'morning_completed_at', 'morning_skipped_at', 'evening_energy', 'reflection', 'closed_at', 'created_at', 'updated_at'], $userId);
-            $this->insertRows($db, 'daily_task_decisions', (array) ($data['dailyTaskDecisions'] ?? []), ['id', 'user_id', 'task_id', 'local_date', 'action', 'task_title', 'created_at'], $userId);
+            $this->insertRows($db, 'daily_task_decisions', (array) ($data['dailyTaskDecisions'] ?? []), ['id', 'user_id', 'task_id', 'local_date', 'action', 'failure_reason', 'task_title', 'created_at'], $userId);
 
             $settings = is_array($data['settings'] ?? null) ? $data['settings'] : [];
             $settings['user_id'] = $userId;

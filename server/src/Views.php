@@ -33,6 +33,7 @@ final class Views
             'dueAt' => $due?->format(DATE_ATOM),
             'due' => self::dueLabel($due, $timezone),
             'duration' => (int) $row['estimated_minutes'],
+            'actualMinutes' => isset($row['actual_minutes']) ? (int) $row['actual_minutes'] : null,
             'isFocus' => (bool) ($row['is_focus'] ?? false),
             'focusSession' => $focusSession === null ? null : [
                 'id' => (int) $focusSession['id'],

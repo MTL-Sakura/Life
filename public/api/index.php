@@ -185,6 +185,11 @@ switch ($action) {
             $completed = (bool) $input['completed'];
             $updates['status'] = $completed ? 'completed' : (($current['start_at'] ?? null) ? 'planned' : 'inbox');
             $updates['completed_at'] = $completed ? gmdate('Y-m-d H:i:s') : null;
+            if ($completed && array_key_exists('actualMinutes', $input)) {
+                $updates['actual_minutes'] = max(1, min(1440, (int) $input['actualMinutes']));
+            } elseif (!$completed) {
+                $updates['actual_minutes'] = null;
+            }
         }
 
         $effectiveStart = array_key_exists('start_at', $updates) ? $updates['start_at'] : $current['start_at'];
@@ -211,6 +216,13 @@ switch ($action) {
         $nextTaskId = null;
         $db->beginTransaction();
         try {
+            if (($completed ?? false) === true) {
+                endFocusSessionForEvening($db, $taskId, gmdate('Y-m-d H:i:s'));
+                if (!array_key_exists('actual_minutes', $updates)) {
+                    $focusMinutes = recordedFocusMinutes($db, $taskId);
+                    $updates['actual_minutes'] = $focusMinutes > 0 ? $focusMinutes : (int) $current['estimated_minutes'];
+                }
+            }
             if ($isRecurringEdit && $updateScope === 'single') {
                 $nextTaskId = createNextRecurringTask($db, $current, $timezone);
                 $updates['recurrence_rule'] = null;
@@ -431,6 +443,7 @@ switch ($action) {
                 }
                 $taskId = (int) ($decision['taskId'] ?? 0);
                 $choice = (string) ($decision['action'] ?? 'later');
+                $failureReason = validFailureReason($decision['reason'] ?? null);
                 if ($taskId < 1 || isset($seen[$taskId]) || !in_array($choice, ['tomorrow', 'later', 'drop'], true)) {
                     continue;
                 }
@@ -441,8 +454,8 @@ switch ($action) {
                 if (!$task) {
                     continue;
                 }
-                $db->prepare('INSERT INTO daily_task_decisions (user_id, task_id, local_date, action, task_title) VALUES (?, ?, ?, ?, ?)')
-                    ->execute([$userId, $taskId, $today, $choice, (string) $task['title']]);
+                $db->prepare('INSERT INTO daily_task_decisions (user_id, task_id, local_date, action, failure_reason, task_title) VALUES (?, ?, ?, ?, ?, ?)')
+                    ->execute([$userId, $taskId, $today, $choice, $failureReason, (string) $task['title']]);
                 applyEveningDecision($db, $task, $choice, $timezone, $now);
             }
             $statement = $db->prepare(
@@ -1155,6 +1168,18 @@ function runningFocusElapsed(array $session): int
     return $elapsed + max(0, time() - ($resumedAt === false ? time() : $resumedAt));
 }
 
+function recordedFocusMinutes(PDO $db, int $taskId): int
+{
+    $statement = $db->prepare('SELECT elapsed_seconds FROM focus_sessions WHERE task_id = ?');
+    $statement->execute([$taskId]);
+    $seconds = array_reduce(
+        $statement->fetchAll(PDO::FETCH_COLUMN),
+        static fn (int $total, mixed $elapsed): int => $total + max(0, (int) $elapsed),
+        0,
+    );
+    return $seconds > 0 ? max(1, (int) round($seconds / 60)) : 0;
+}
+
 function taskSubtasks(PDO $db, int $taskId): array
 {
     $statement = $db->prepare('SELECT id, title, completed, position FROM subtasks WHERE task_id = ? ORDER BY position, id');
@@ -1403,7 +1428,7 @@ function reviewData(PDO $db, int $userId, string $weekStart, string $weekEnd, st
     }
 
     $taskStatement = $db->prepare(
-        "SELECT id, status, start_at, due_at, completed_at, estimated_minutes, is_focus
+        "SELECT id, status, start_at, due_at, completed_at, estimated_minutes, actual_minutes, is_focus
          FROM tasks WHERE user_id = ? AND status != 'cancelled'"
     );
     $taskStatement->execute([$userId]);
@@ -1412,6 +1437,10 @@ function reviewData(PDO $db, int $userId, string $weekStart, string $weekEnd, st
     $plannedMinutes = 0;
     $completedMinutes = 0;
     $focusPlannedMinutes = 0;
+    $calibrationSamples = 0;
+    $calibrationEstimatedMinutes = 0;
+    $calibrationActualMinutes = 0;
+    $calibrationAbsoluteError = 0;
     foreach ($taskStatement->fetchAll() as $task) {
         $date = reviewLocalDate($task['start_at'] ?? null, $zone)
             ?? reviewLocalDate($task['due_at'] ?? null, $zone)
@@ -1432,6 +1461,13 @@ function reviewData(PDO $db, int $userId, string $weekStart, string $weekEnd, st
             $completed++;
             $completedMinutes += $duration;
             $days[$date]['completed']++;
+            if ($task['actual_minutes'] !== null) {
+                $actualMinutes = max(1, (int) $task['actual_minutes']);
+                $calibrationSamples++;
+                $calibrationEstimatedMinutes += $duration;
+                $calibrationActualMinutes += $actualMinutes;
+                $calibrationAbsoluteError += abs($actualMinutes - $duration);
+            }
         }
     }
 
@@ -1528,6 +1564,17 @@ function reviewData(PDO $db, int $userId, string $weekStart, string $weekEnd, st
         }
     }
 
+    $reasonStatement = $db->prepare(
+        'SELECT failure_reason, COUNT(*) AS reason_count FROM daily_task_decisions
+         WHERE user_id = ? AND local_date >= ? AND local_date < ? AND failure_reason IS NOT NULL
+         GROUP BY failure_reason ORDER BY reason_count DESC, failure_reason'
+    );
+    $reasonStatement->execute([$userId, $startLocal->format('Y-m-d'), $endLocal->format('Y-m-d')]);
+    $failureReasons = array_map(static fn (array $reason): array => [
+        'reason' => (string) $reason['failure_reason'],
+        'count' => (int) $reason['reason_count'],
+    ], $reasonStatement->fetchAll());
+
     $overdueStatement = $db->prepare("SELECT COUNT(*) FROM tasks WHERE user_id = ? AND status NOT IN ('completed', 'cancelled') AND due_at < UTC_TIMESTAMP()");
     $overdueStatement->execute([$userId]);
     foreach ($days as &$day) {
@@ -1556,6 +1603,13 @@ function reviewData(PDO $db, int $userId, string $weekStart, string $weekEnd, st
         'averageMorningEnergy' => $morningEnergyCount > 0 ? round($morningEnergyTotal / $morningEnergyCount, 1) : null,
         'averageEveningEnergy' => $eveningEnergyCount > 0 ? round($eveningEnergyTotal / $eveningEnergyCount, 1) : null,
         'averageWakeTime' => $averageWakeMinutes === null ? null : sprintf('%02d:%02d', intdiv($averageWakeMinutes, 60), $averageWakeMinutes % 60),
+        'calibrationSamples' => $calibrationSamples,
+        'calibrationEstimatedMinutes' => $calibrationEstimatedMinutes,
+        'calibrationActualMinutes' => $calibrationActualMinutes,
+        'estimateAccuracy' => $calibrationEstimatedMinutes > 0
+            ? max(0, (int) round(100 - ($calibrationAbsoluteError / $calibrationEstimatedMinutes * 100)))
+            : null,
+        'failureReasons' => $failureReasons,
         'carryovers' => $carryovers,
         'days' => array_values($days),
     ];
@@ -1630,6 +1684,14 @@ function validEnergy(mixed $value): ?int
 {
     $energy = (int) $value;
     return $energy >= 1 && $energy <= 5 ? $energy : null;
+}
+
+function validFailureReason(mixed $value): ?string
+{
+    $reason = nullableString($value);
+    return $reason !== null && in_array($reason, ['time', 'energy', 'interrupted', 'difficult', 'resistance', 'changed'], true)
+        ? $reason
+        : null;
 }
 
 function validScheduleMode(string $value): string

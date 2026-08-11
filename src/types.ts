@@ -50,6 +50,7 @@ export type Task = {
   end?: string
   due?: string
   duration: number
+  actualMinutes?: number | null
   isFocus?: boolean
   focusSession?: FocusSession | null
   completed: boolean
@@ -153,9 +154,12 @@ export type MorningCheckinInput = {
   focusTaskId: number | null
 }
 
+export type FailureReason = 'time' | 'energy' | 'interrupted' | 'difficult' | 'resistance' | 'changed'
+
 export type EveningDecision = {
   taskId: number
   action: 'tomorrow' | 'later' | 'drop'
+  reason: FailureReason
 }
 
 export type ReviewSummary = {
@@ -178,6 +182,14 @@ export type ReviewSummary = {
   averageMorningEnergy: number | null
   averageEveningEnergy: number | null
   averageWakeTime: string | null
+  calibrationSamples: number
+  calibrationEstimatedMinutes: number
+  calibrationActualMinutes: number
+  estimateAccuracy: number | null
+  failureReasons: Array<{
+    reason: FailureReason
+    count: number
+  }>
   carryovers: {
     tomorrow: number
     later: number
