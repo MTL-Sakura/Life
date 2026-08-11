@@ -15,7 +15,7 @@ final class AiPlanner
 {
     private const MAX_SOURCE_TASKS = 20;
 
-    public function generate(PDO $db, int $userId, string $timezone): array
+    public function generate(PDO $db, int $userId, string $timezone, string $scope = 'today', array $reviewContext = []): array
     {
         $apiKey = Config::get('OPENAI_API_KEY');
         if ($apiKey === null || trim($apiKey) === '') {
@@ -25,7 +25,15 @@ final class AiPlanner
         $zone = $this->timezone($timezone);
         $now = new DateTimeImmutable('now', $zone);
         $today = $now->setTime(0, 0);
-        $windowEnd = $today->modify('+1 day');
+        $scope = $scope === 'next_week' ? 'next_week' : 'today';
+        if ($scope === 'next_week') {
+            $daysUntilMonday = 8 - (int) $today->format('N');
+            $windowStart = $today->modify("+{$daysUntilMonday} days");
+            $windowEnd = $windowStart->modify('+7 days');
+        } else {
+            $windowStart = $today;
+            $windowEnd = $today->modify('+1 day');
+        }
         $preferences = $this->preferences($db, $userId);
         $dailyLimit = max(1, min(10, (int) Config::get('OPENAI_DAILY_LIMIT', '2')));
         $usedToday = $this->usageToday($db, $userId, $today);
@@ -33,13 +41,13 @@ final class AiPlanner
             throw new AiPlannerException("今天的 AI 安排次数已经用完了，明天可以再使用 {$dailyLimit} 次。", 429);
         }
 
-        $tasks = $this->sourceTasks($db, $userId, $timezone, $today, $windowEnd);
+        $tasks = $this->sourceTasks($db, $userId, $timezone, $windowStart, $windowEnd, $scope === 'next_week');
         if ($tasks === []) {
-            throw new AiPlannerException('今天没有需要整理的任务。');
+            throw new AiPlannerException($scope === 'next_week' ? '目前没有需要放进下周的灵活任务。' : '今天没有需要整理的任务。');
         }
 
         $sourceTaskIds = array_map(static fn (array $task): int => (int) $task['id'], $tasks);
-        $busy = $this->busyBlocks($db, $userId, $today, $windowEnd, $timezone, $sourceTaskIds, $preferences);
+        $busy = $this->busyBlocks($db, $userId, $windowStart, $windowEnd, $timezone, $sourceTaskIds, $preferences);
         $model = trim((string) Config::get('OPENAI_MODEL', 'gpt-5.4-mini'));
         $expiresAt = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify('+30 minutes');
 
@@ -51,15 +59,16 @@ final class AiPlanner
             $userId,
             $model,
             json_encode($sourceTaskIds, JSON_THROW_ON_ERROR),
-            $today->format('Y-m-d'),
+            $windowStart->format('Y-m-d'),
             $windowEnd->modify('-1 day')->format('Y-m-d'),
             $expiresAt->format('Y-m-d H:i:s'),
         ]);
         $planId = (int) $db->lastInsertId();
 
         try {
-            $response = $this->requestPlan($apiKey, $model, $timezone, $now, $windowEnd, $tasks, $busy, $preferences);
-            $proposal = $this->validateProposal($response['proposal'], $tasks, $busy, $now, $windowEnd, $zone, $preferences);
+            $response = $this->requestPlan($apiKey, $model, $timezone, $now, $windowStart, $windowEnd, $tasks, $busy, $preferences, $scope, $reviewContext);
+            $earliestStart = $scope === 'next_week' ? $windowStart : $now;
+            $proposal = $this->validateProposal($response['proposal'], $tasks, $busy, $earliestStart, $windowEnd, $zone, $preferences, $scope);
             if ($proposal['items'] === []) {
                 throw new AiPlannerException('AI 没有生成可用的时间安排，请稍后再试。', 502);
             }
@@ -79,6 +88,9 @@ final class AiPlanner
                 $proposal,
                 max(0, $dailyLimit - $usedToday - 1),
                 $expiresAt,
+                $scope,
+                $windowStart,
+                $windowEnd->modify('-1 day'),
             );
         } catch (Throwable $error) {
             $message = $this->truncate($error->getMessage(), 500);
@@ -174,7 +186,8 @@ final class AiPlanner
                     }
                     $storedBlocks[] = [$startUtc, $endUtc];
                 }
-                [$startUtc, $endUtc] = $storedBlocks[0];
+                $startUtc = $storedBlocks[0][0];
+                $endUtc = $storedBlocks[count($storedBlocks) - 1][1];
 
                 $reminderMinutes = $task['reminder_minutes'] === null ? null : (int) $task['reminder_minutes'];
                 $reminderAt = $reminderMinutes === null
@@ -217,10 +230,13 @@ final class AiPlanner
         string $model,
         string $timezone,
         DateTimeImmutable $now,
+        DateTimeImmutable $windowStart,
         DateTimeImmutable $windowEnd,
         array $tasks,
         array $busy,
         array $preferences,
+        string $scope,
+        array $reviewContext,
     ): array {
         $effort = (string) Config::get('OPENAI_REASONING_EFFORT', 'low');
         if (!in_array($effort, ['none', 'low', 'medium', 'high', 'xhigh'], true)) {
@@ -231,7 +247,7 @@ final class AiPlanner
             'timezone' => $timezone,
             'current_time' => $now->format(DATE_ATOM),
             'planning_window' => [
-                'start_date' => $now->format('Y-m-d'),
+                'start_date' => $windowStart->format('Y-m-d'),
                 'end_date' => $windowEnd->modify('-1 day')->format('Y-m-d'),
                 'daily_start' => $preferences['planningStartTime'],
                 'daily_end' => $preferences['planningEndTime'],
@@ -253,7 +269,12 @@ final class AiPlanner
                 'category' => $task['category_name'] ?? null,
             ], $tasks),
             'busy_blocks' => $busy,
+            'weekly_review' => $scope === 'next_week' ? $reviewContext : null,
         ];
+
+        $developerPrompt = $scope === 'next_week'
+            ? '你是人生看板的周回顾与下周安排助手。先根据 weekly_review 找出真实节奏，给出最多3条温和、具体、可执行的 adjustments；再安排给出的灵活任务。不要追求塞满一周，不创建、不删除、不改标题。必须遵守 planning_window、每天的午晚餐、任务时间窗、固定日程和缓冲；开始时间使用15分钟刻度。专注任务超过90分钟时拆成不超过90分钟的多个区块，区块总时长等于任务时长，区块之间至少间隔30分钟。无法合理安排的任务放入 skipped。输出简洁中文。'
+            : '你是人生看板的今日整理助手。给出最多3条简短的执行 adjustments，并只调整给出的任务，不创建、不删除、不改标题。必须遵守 planning_window、午晚餐、任务时间窗、现有日程和缓冲；开始时间使用15分钟刻度。专注任务超过90分钟时拆成不超过90分钟的多个区块，区块总时长等于任务时长，区块之间至少间隔30分钟。无法合理安排的任务放入 skipped，并只建议延期或跳过。输出简洁中文理由。';
 
         $request = [
             'model' => $model,
@@ -265,7 +286,7 @@ final class AiPlanner
                     'role' => 'developer',
                     'content' => [[
                         'type' => 'input_text',
-                        'text' => '你是人生看板的今日整理助手。只调整给出的任务，不创建、不删除、不改标题。必须遵守 planning_window、午晚餐、任务时间窗、现有日程和缓冲；开始时间使用15分钟刻度。专注任务超过90分钟时拆成不超过90分钟的多个区块，区块总时长等于任务时长，区块之间至少间隔30分钟。无法合理安排的任务放入 skipped，并只建议延期或跳过。输出简洁中文理由。',
+                        'text' => $developerPrompt,
                     ]],
                 ],
                 [
@@ -286,6 +307,11 @@ final class AiPlanner
                         'additionalProperties' => false,
                         'properties' => [
                             'summary' => ['type' => 'string'],
+                            'adjustments' => [
+                                'type' => 'array',
+                                'maxItems' => 3,
+                                'items' => ['type' => 'string'],
+                            ],
                             'items' => [
                                 'type' => 'array',
                                 'items' => [
@@ -324,7 +350,7 @@ final class AiPlanner
                                 ],
                             ],
                         ],
-                        'required' => ['summary', 'items', 'skipped'],
+                        'required' => ['summary', 'adjustments', 'items', 'skipped'],
                     ],
                 ],
             ],
@@ -412,6 +438,7 @@ final class AiPlanner
         DateTimeImmutable $windowEnd,
         DateTimeZone $zone,
         array $preferences,
+        string $scope,
     ): array {
         $taskMap = [];
         foreach ($tasks as $task) {
@@ -531,16 +558,24 @@ final class AiPlanner
         }
 
         usort($items, static fn (array $left, array $right): int => strcmp($left['startAt'], $right['startAt']));
+        $adjustments = [];
+        foreach (array_slice((array) ($proposal['adjustments'] ?? []), 0, 3) as $adjustment) {
+            $text = $this->truncate(trim((string) $adjustment), 180);
+            if ($text !== '') {
+                $adjustments[] = $text;
+            }
+        }
         return [
-            'summary' => $this->truncate(trim((string) ($proposal['summary'] ?? '已经按优先级整理了今天。')), 300),
+            'summary' => $this->truncate(trim((string) ($proposal['summary'] ?? ($scope === 'next_week' ? '已经根据本周节奏准备了下周草案。' : '已经按优先级整理了今天。'))), 300),
+            'adjustments' => $adjustments,
             'items' => $items,
             'skipped' => $skipped,
         ];
     }
 
-    private function sourceTasks(PDO $db, int $userId, string $timezone, DateTimeImmutable $today, DateTimeImmutable $windowEnd): array
+    private function sourceTasks(PDO $db, int $userId, string $timezone, DateTimeImmutable $windowStart, DateTimeImmutable $windowEnd, bool $includeUndatedInbox = false): array
     {
-        $startUtc = $today->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $startUtc = $windowStart->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $endUtc = $windowEnd->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $nearDueUtc = $windowEnd->modify('+2 days')->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $statement = $db->prepare(
@@ -550,11 +585,11 @@ final class AiPlanner
              LEFT JOIN categories ON categories.id = tasks.category_id
              WHERE tasks.user_id = ? AND tasks.status NOT IN ("completed", "cancelled") AND tasks.schedule_mode != "fixed"
                AND ((tasks.start_at >= ? AND tasks.start_at < ?)
-                    OR (tasks.status = "inbox" AND tasks.start_at IS NULL AND tasks.due_at IS NOT NULL AND tasks.due_at < ?))
+                    OR (tasks.status = "inbox" AND tasks.start_at IS NULL AND (? = 1 OR (tasks.due_at IS NOT NULL AND tasks.due_at < ?))))
              ORDER BY FIELD(tasks.priority, "high", "medium", "low"), tasks.due_at IS NULL, tasks.due_at, tasks.created_at
              LIMIT ' . self::MAX_SOURCE_TASKS
         );
-        $statement->execute([$userId, $startUtc, $endUtc, $nearDueUtc]);
+        $statement->execute([$userId, $startUtc, $endUtc, (int) $includeUndatedInbox, $nearDueUtc]);
         $zone = $this->timezone($timezone);
         return array_map(static function (array $task) use ($zone): array {
             $task['due_local'] = $task['due_at']
@@ -605,12 +640,14 @@ final class AiPlanner
                 'end_at' => (new DateTimeImmutable((string) $row['end_at'], new DateTimeZone('UTC')))->setTimezone($zone)->format(DATE_ATOM),
             ];
         }
-        foreach ([['午餐', 'lunchStartTime', 'lunchEndTime'], ['晚餐', 'dinnerStartTime', 'dinnerEndTime']] as [$title, $startKey, $endKey]) {
-            $blocks[] = [
-                'title' => $title,
-                'start_at' => $windowStart->format('Y-m-d') . 'T' . $preferences[$startKey] . ':00',
-                'end_at' => $windowStart->format('Y-m-d') . 'T' . $preferences[$endKey] . ':00',
-            ];
+        for ($day = $windowStart; $day < $windowEnd; $day = $day->modify('+1 day')) {
+            foreach ([['午餐', 'lunchStartTime', 'lunchEndTime'], ['晚餐', 'dinnerStartTime', 'dinnerEndTime']] as [$title, $startKey, $endKey]) {
+                $blocks[] = [
+                    'title' => $title,
+                    'start_at' => $day->format('Y-m-d') . 'T' . $preferences[$startKey] . ':00',
+                    'end_at' => $day->format('Y-m-d') . 'T' . $preferences[$endKey] . ':00',
+                ];
+            }
         }
         return $blocks;
     }
@@ -704,15 +741,22 @@ final class AiPlanner
         array $proposal,
         int $remainingUses,
         DateTimeImmutable $expiresAt,
+        string $scope,
+        DateTimeImmutable $targetStart,
+        DateTimeImmutable $targetEnd,
     ): array {
         return [
             'id' => $planId,
             'model' => $model,
             'summary' => $proposal['summary'],
+            'adjustments' => $proposal['adjustments'] ?? [],
             'items' => $proposal['items'],
             'skipped' => $proposal['skipped'],
             'remainingUses' => $remainingUses,
             'expiresAt' => $expiresAt->format(DATE_ATOM),
+            'scope' => $scope,
+            'targetStartDate' => $targetStart->format('Y-m-d'),
+            'targetEndDate' => $targetEnd->format('Y-m-d'),
         ];
     }
 }

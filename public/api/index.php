@@ -441,6 +441,8 @@ switch ($action) {
                 if (!$task) {
                     continue;
                 }
+                $db->prepare('INSERT INTO daily_task_decisions (user_id, task_id, local_date, action, task_title) VALUES (?, ?, ?, ?, ?)')
+                    ->execute([$userId, $taskId, $today, $choice, (string) $task['title']]);
                 applyEveningDecision($db, $task, $choice, $timezone, $now);
             }
             $statement = $db->prepare(
@@ -690,6 +692,17 @@ switch ($action) {
             Http::json(['error' => $error->getMessage()], $error->httpStatus());
         }
 
+    case 'ai.plan.week':
+        Http::requireMethod('POST');
+        try {
+            [$reviewStartUtc, $reviewEndUtc, $reviewStartLocal] = DateTimes::berlinWeekBounds($timezone);
+            ensureRecurringTaskContinuity($db, $userId, $timezone, $reviewStartLocal->modify('+14 days')->format('Y-m-d'));
+            $reviewContext = reviewData($db, $userId, $reviewStartUtc, $reviewEndUtc, $timezone);
+            Http::json(['plan' => (new AiPlanner())->generate($db, $userId, $timezone, 'next_week', $reviewContext)], 201);
+        } catch (AiPlannerException $error) {
+            Http::json(['error' => $error->getMessage()], $error->httpStatus());
+        }
+
     case 'ai.apply':
         Http::requireMethod('POST');
         $input = Http::input();
@@ -807,7 +820,7 @@ function bootstrapData(PDO $db, int $userId, string $timezone): array
         'backups' => (new BackupManager())->records($db, $userId),
         'dailyRhythm' => dailyRhythmData($db, $userId, $timezone),
         'settings' => settingsView($settingsRow),
-        'review' => reviewData($db, $userId, $weekStartUtc, $weekEndUtc),
+        'review' => reviewData($db, $userId, $weekStartUtc, $weekEndUtc, $timezone),
         'csrfToken' => Auth::csrfToken(),
     ];
 }
@@ -1364,38 +1377,196 @@ function habitDetail(array $habit): string
     };
 }
 
-function reviewData(PDO $db, int $userId, string $weekStart, string $weekEnd): array
+function reviewData(PDO $db, int $userId, string $weekStart, string $weekEnd, string $timezone): array
 {
-    $statement = $db->prepare(
-        'SELECT COUNT(CASE WHEN
-                    (start_at >= ? AND start_at < ?)
-                    OR (due_at >= ? AND due_at < ?)
-                    OR (completed_at >= ? AND completed_at < ?)
-                THEN 1 END) AS total,
-                SUM(status = "completed" AND completed_at >= ? AND completed_at < ?) AS completed,
-                COALESCE(SUM(CASE WHEN status = "completed" AND completed_at >= ? AND completed_at < ? THEN estimated_minutes ELSE 0 END), 0) AS completed_minutes,
-                SUM(status != "completed" AND due_at < UTC_TIMESTAMP()) AS overdue
-         FROM tasks WHERE user_id = ? AND status != "cancelled"'
+    $zone = new DateTimeZone($timezone);
+    $startLocal = (new DateTimeImmutable($weekStart, new DateTimeZone('UTC')))->setTimezone($zone);
+    $endLocal = (new DateTimeImmutable($weekEnd, new DateTimeZone('UTC')))->setTimezone($zone);
+    $days = [];
+    for ($index = 0; $index < 7; $index++) {
+        $date = $startLocal->modify("+{$index} days")->format('Y-m-d');
+        $days[$date] = [
+            'date' => $date,
+            'total' => 0,
+            'completed' => 0,
+            'completionRate' => 0,
+            'plannedMinutes' => 0,
+            'focusMinutes' => 0,
+            'wakeTime' => null,
+            'hadBreakfast' => null,
+            'morningEnergy' => null,
+            'eveningEnergy' => null,
+            'focusSelected' => false,
+            'focusCompleted' => false,
+            'closed' => false,
+        ];
+    }
+
+    $taskStatement = $db->prepare(
+        "SELECT id, status, start_at, due_at, completed_at, estimated_minutes, is_focus
+         FROM tasks WHERE user_id = ? AND status != 'cancelled'"
     );
-    $statement->execute([
-        $weekStart, $weekEnd,
-        $weekStart, $weekEnd,
-        $weekStart, $weekEnd,
-        $weekStart, $weekEnd,
-        $weekStart, $weekEnd,
-        $userId,
-    ]);
-    $row = $statement->fetch() ?: [];
-    $total = (int) ($row['total'] ?? 0);
-    $completed = (int) ($row['completed'] ?? 0);
+    $taskStatement->execute([$userId]);
+    $total = 0;
+    $completed = 0;
+    $plannedMinutes = 0;
+    $completedMinutes = 0;
+    $focusPlannedMinutes = 0;
+    foreach ($taskStatement->fetchAll() as $task) {
+        $date = reviewLocalDate($task['start_at'] ?? null, $zone)
+            ?? reviewLocalDate($task['due_at'] ?? null, $zone)
+            ?? reviewLocalDate($task['completed_at'] ?? null, $zone);
+        if ($date === null || !isset($days[$date])) {
+            continue;
+        }
+        $duration = max(0, (int) $task['estimated_minutes']);
+        $isCompleted = $task['status'] === 'completed';
+        $total++;
+        $plannedMinutes += $duration;
+        $days[$date]['total']++;
+        $days[$date]['plannedMinutes'] += $duration;
+        if ((bool) $task['is_focus']) {
+            $focusPlannedMinutes += $duration;
+        }
+        if ($isCompleted) {
+            $completed++;
+            $completedMinutes += $duration;
+            $days[$date]['completed']++;
+        }
+    }
+
+    $focusStatement = $db->prepare(
+        'SELECT status, elapsed_seconds, last_resumed_at, started_at
+         FROM focus_sessions WHERE user_id = ? AND started_at >= ? AND started_at < ?'
+    );
+    $focusStatement->execute([$userId, $weekStart, $weekEnd]);
+    $focusActualSeconds = 0;
+    foreach ($focusStatement->fetchAll() as $session) {
+        $seconds = ($session['status'] ?? '') === 'running'
+            ? runningFocusElapsed($session)
+            : max(0, (int) $session['elapsed_seconds']);
+        $focusActualSeconds += $seconds;
+        $date = reviewLocalDate($session['started_at'] ?? null, $zone);
+        if ($date !== null && isset($days[$date])) {
+            $days[$date]['focusMinutes'] += (int) round($seconds / 60);
+        }
+    }
+
+    $checkinStatement = $db->prepare(
+        'SELECT daily_checkins.*, tasks.status AS focus_task_status
+         FROM daily_checkins
+         LEFT JOIN tasks ON tasks.id = daily_checkins.daily_focus_task_id
+         WHERE daily_checkins.user_id = ? AND daily_checkins.local_date >= ? AND daily_checkins.local_date < ?
+         ORDER BY daily_checkins.local_date'
+    );
+    $checkinStatement->execute([$userId, $startLocal->format('Y-m-d'), $endLocal->format('Y-m-d')]);
+    $morningCheckins = 0;
+    $eveningCheckins = 0;
+    $breakfastDays = 0;
+    $morningEnergyTotal = 0;
+    $morningEnergyCount = 0;
+    $eveningEnergyTotal = 0;
+    $eveningEnergyCount = 0;
+    $wakeMinutesTotal = 0;
+    $wakeMinutesCount = 0;
+    $dailyFocusSelected = 0;
+    $dailyFocusCompleted = 0;
+    foreach ($checkinStatement->fetchAll() as $checkin) {
+        $date = (string) $checkin['local_date'];
+        if (!isset($days[$date])) {
+            continue;
+        }
+        if (!empty($checkin['morning_completed_at'])) {
+            $morningCheckins++;
+        }
+        if (!empty($checkin['closed_at'])) {
+            $eveningCheckins++;
+            $days[$date]['closed'] = true;
+        }
+        if ($checkin['had_breakfast'] !== null) {
+            $days[$date]['hadBreakfast'] = (bool) $checkin['had_breakfast'];
+            $breakfastDays += (int) (bool) $checkin['had_breakfast'];
+        }
+        if ($checkin['morning_energy'] !== null) {
+            $energy = (int) $checkin['morning_energy'];
+            $days[$date]['morningEnergy'] = $energy;
+            $morningEnergyTotal += $energy;
+            $morningEnergyCount++;
+        }
+        if ($checkin['evening_energy'] !== null) {
+            $energy = (int) $checkin['evening_energy'];
+            $days[$date]['eveningEnergy'] = $energy;
+            $eveningEnergyTotal += $energy;
+            $eveningEnergyCount++;
+        }
+        if (!empty($checkin['wake_time'])) {
+            $wakeTime = substr((string) $checkin['wake_time'], 0, 5);
+            $days[$date]['wakeTime'] = $wakeTime;
+            [$wakeHour, $wakeMinute] = array_map('intval', explode(':', $wakeTime));
+            $wakeMinutesTotal += $wakeHour * 60 + $wakeMinute;
+            $wakeMinutesCount++;
+        }
+        if ($checkin['daily_focus_task_id'] !== null) {
+            $dailyFocusSelected++;
+            $days[$date]['focusSelected'] = true;
+            if (($checkin['focus_task_status'] ?? null) === 'completed') {
+                $dailyFocusCompleted++;
+                $days[$date]['focusCompleted'] = true;
+            }
+        }
+    }
+
+    $decisionStatement = $db->prepare(
+        'SELECT action, COUNT(*) AS decision_count FROM daily_task_decisions
+         WHERE user_id = ? AND local_date >= ? AND local_date < ? GROUP BY action'
+    );
+    $decisionStatement->execute([$userId, $startLocal->format('Y-m-d'), $endLocal->format('Y-m-d')]);
+    $carryovers = ['tomorrow' => 0, 'later' => 0, 'drop' => 0];
+    foreach ($decisionStatement->fetchAll() as $decision) {
+        if (isset($carryovers[$decision['action']])) {
+            $carryovers[$decision['action']] = (int) $decision['decision_count'];
+        }
+    }
+
+    $overdueStatement = $db->prepare("SELECT COUNT(*) FROM tasks WHERE user_id = ? AND status NOT IN ('completed', 'cancelled') AND due_at < UTC_TIMESTAMP()");
+    $overdueStatement->execute([$userId]);
+    foreach ($days as &$day) {
+        $day['completionRate'] = $day['total'] > 0 ? (int) round(($day['completed'] / $day['total']) * 100) : 0;
+    }
+    unset($day);
+    $averageWakeMinutes = $wakeMinutesCount > 0 ? (int) round($wakeMinutesTotal / $wakeMinutesCount) : null;
 
     return [
+        'weekStart' => $startLocal->format('Y-m-d'),
+        'weekEnd' => $endLocal->modify('-1 day')->format('Y-m-d'),
         'total' => $total,
         'completed' => $completed,
         'completionRate' => $total > 0 ? (int) round(($completed / $total) * 100) : 0,
-        'completedMinutes' => (int) ($row['completed_minutes'] ?? 0),
-        'overdue' => (int) ($row['overdue'] ?? 0),
+        'plannedMinutes' => $plannedMinutes,
+        'completedMinutes' => $completedMinutes,
+        'focusPlannedMinutes' => $focusPlannedMinutes,
+        'focusActualMinutes' => (int) round($focusActualSeconds / 60),
+        'overdue' => (int) $overdueStatement->fetchColumn(),
+        'dailyFocusSelected' => $dailyFocusSelected,
+        'dailyFocusCompleted' => $dailyFocusCompleted,
+        'dailyFocusRate' => $dailyFocusSelected > 0 ? (int) round(($dailyFocusCompleted / $dailyFocusSelected) * 100) : 0,
+        'morningCheckins' => $morningCheckins,
+        'eveningCheckins' => $eveningCheckins,
+        'breakfastDays' => $breakfastDays,
+        'averageMorningEnergy' => $morningEnergyCount > 0 ? round($morningEnergyTotal / $morningEnergyCount, 1) : null,
+        'averageEveningEnergy' => $eveningEnergyCount > 0 ? round($eveningEnergyTotal / $eveningEnergyCount, 1) : null,
+        'averageWakeTime' => $averageWakeMinutes === null ? null : sprintf('%02d:%02d', intdiv($averageWakeMinutes, 60), $averageWakeMinutes % 60),
+        'carryovers' => $carryovers,
+        'days' => array_values($days),
     ];
+}
+
+function reviewLocalDate(mixed $value, DateTimeZone $zone): ?string
+{
+    if ($value === null || $value === '') {
+        return null;
+    }
+    return (new DateTimeImmutable((string) $value, new DateTimeZone('UTC')))->setTimezone($zone)->format('Y-m-d');
 }
 
 function settingsView(array $row): array

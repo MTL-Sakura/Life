@@ -159,11 +159,45 @@ export type EveningDecision = {
 }
 
 export type ReviewSummary = {
+  weekStart: string
+  weekEnd: string
   total: number
   completed: number
   completionRate: number
+  plannedMinutes: number
   completedMinutes: number
+  focusPlannedMinutes: number
+  focusActualMinutes: number
   overdue: number
+  dailyFocusSelected: number
+  dailyFocusCompleted: number
+  dailyFocusRate: number
+  morningCheckins: number
+  eveningCheckins: number
+  breakfastDays: number
+  averageMorningEnergy: number | null
+  averageEveningEnergy: number | null
+  averageWakeTime: string | null
+  carryovers: {
+    tomorrow: number
+    later: number
+    drop: number
+  }
+  days: Array<{
+    date: string
+    total: number
+    completed: number
+    completionRate: number
+    plannedMinutes: number
+    focusMinutes: number
+    wakeTime: string | null
+    hadBreakfast: boolean | null
+    morningEnergy: number | null
+    eveningEnergy: number | null
+    focusSelected: boolean
+    focusCompleted: boolean
+    closed: boolean
+  }>
 }
 
 export type AiPlanItem = {
@@ -191,10 +225,14 @@ export type AiPlan = {
   id: number
   model: string
   summary: string
+  adjustments: string[]
   items: AiPlanItem[]
   skipped: AiPlanSkippedItem[]
   remainingUses: number
   expiresAt: string
+  scope: 'today' | 'next_week'
+  targetStartDate: string
+  targetEndDate: string
 }
 
 export type PlanImportDocument = {

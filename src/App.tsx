@@ -14,6 +14,7 @@ import {
   Circle,
   Clock3,
   Coffee,
+  CornerDownRight,
   Dumbbell,
   Download,
   Eye,
@@ -96,11 +97,27 @@ const defaultSettings: UserSettings = {
 }
 
 const defaultReview: ReviewSummary = {
+  weekStart: '',
+  weekEnd: '',
   total: 0,
   completed: 0,
   completionRate: 0,
+  plannedMinutes: 0,
   completedMinutes: 0,
+  focusPlannedMinutes: 0,
+  focusActualMinutes: 0,
   overdue: 0,
+  dailyFocusSelected: 0,
+  dailyFocusCompleted: 0,
+  dailyFocusRate: 0,
+  morningCheckins: 0,
+  eveningCheckins: 0,
+  breakfastDays: 0,
+  averageMorningEnergy: null,
+  averageEveningEnergy: null,
+  averageWakeTime: null,
+  carryovers: { tomorrow: 0, later: 0, drop: 0 },
+  days: [],
 }
 
 function emptyDailyRhythm(): DailyRhythm {
@@ -610,7 +627,8 @@ function aiPlanTimeLabel(startAt: string, endAt: string) {
   return `${formatter.format(new Date(startAt))}–${formatter.format(new Date(endAt))}`
 }
 
-function AiPlannerModal({ plan, loading, applying, error, onClose, onRetry, onApply }: {
+function AiPlannerModal({ scope, plan, loading, applying, error, onClose, onRetry, onApply }: {
+  scope: 'today' | 'next_week'
   plan: AiPlan | null
   loading: boolean
   applying: boolean
@@ -619,14 +637,15 @@ function AiPlannerModal({ plan, loading, applying, error, onClose, onRetry, onAp
   onRetry: () => void
   onApply: () => void
 }) {
+  const weekly = scope === 'next_week'
   return (
-    <ModalShell title="整理今天" eyebrow="SMART PLAN" onClose={onClose}>
+    <ModalShell title={weekly ? '准备下周' : '整理今天'} eyebrow={weekly ? 'WEEKLY PLAN' : 'SMART PLAN'} onClose={onClose}>
       <div className="ai-plan-body">
         {loading && (
           <div className="ai-plan-loading" role="status">
             <span className="ai-plan-spinner"><Sparkles size={24} /></span>
-            <strong>正在整理今天</strong>
-            <p>会避开固定安排、吃饭时间和必要缓冲。</p>
+            <strong>{weekly ? '正在回顾并准备下周' : '正在整理今天'}</strong>
+            <p>{weekly ? '会根据本周真实节奏给出调整，并避开下周固定安排与吃饭时间。' : '会避开固定安排、吃饭时间和必要缓冲。'}</p>
           </div>
         )}
 
@@ -643,6 +662,7 @@ function AiPlannerModal({ plan, loading, applying, error, onClose, onRetry, onAp
               <Sparkles size={19} />
               <div><strong>{plan.summary}</strong><span>今天还可以生成 {plan.remainingUses} 次新建议</span></div>
             </div>
+            {(plan.adjustments ?? []).length > 0 && <div className="ai-adjustments"><span>{weekly ? '下周调整' : '执行提示'}</span>{(plan.adjustments ?? []).map((adjustment, index) => <p key={`${index}-${adjustment}`}><strong>{index + 1}</strong>{adjustment}</p>)}</div>}
             <div className="ai-plan-list">
               {plan.items.map((item) => (
                 <article className="ai-plan-item" key={item.taskId}>
@@ -664,7 +684,7 @@ function AiPlannerModal({ plan, loading, applying, error, onClose, onRetry, onAp
       <footer className="modal-actions">
         <button type="button" className="outline-button" onClick={onClose}>{plan ? '暂不采用' : '关闭'}</button>
         {error && <button type="button" className="primary-button" onClick={onRetry}>重新生成</button>}
-        {plan && <button type="button" className="primary-button" onClick={onApply} disabled={applying}>{applying ? '写入中…' : `采用这 ${plan.items.length} 项安排`}</button>}
+        {plan && <button type="button" className="primary-button" onClick={onApply} disabled={applying}>{applying ? '写入中…' : `采用这 ${plan.items.length} 项${weekly ? '下周' : ''}安排`}</button>}
       </footer>
     </ModalShell>
   )
@@ -1964,32 +1984,36 @@ function HabitsPage({ habits, toggleHabit, onNewHabit }: { habits: Habit[]; togg
   )
 }
 
-function ReviewPage({ summary, tasks }: { summary: ReviewSummary; tasks: Task[] }) {
+function ReviewPage({ summary, tasks, onAiPlan }: { summary: ReviewSummary; tasks: Task[]; onAiPlan: () => void }) {
   const weekDates = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index))
-  const weekTasks = tasks.filter((task) => {
-    if (task.skipped) return false
-    const date = taskReviewDate(task)
-    return date !== null && weekDates.includes(date)
-  })
-  const completedWeekTasks = weekTasks.filter((task) => task.completed)
-  const completedCount = completedWeekTasks.length
-  const totalCount = weekTasks.length
-  const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
-  const completedMinutes = completedWeekTasks.reduce((sum, task) => sum + task.duration, 0)
-  const daily = weekDates.map((date) => {
+  const weekTasks = tasks.filter((task) => !task.skipped && weekDates.includes(taskReviewDate(task) ?? ''))
+  const fallbackCompleted = weekTasks.filter((task) => task.completed)
+  const fallbackDaily = weekDates.map((date) => {
     const dayTasks = tasks.filter((task) => !task.skipped && taskReviewDate(task) === date)
     const completed = dayTasks.filter((task) => task.completed).length
     return {
+      date,
       total: dayTasks.length,
       completed,
-      value: dayTasks.length > 0 ? Math.round((completed / dayTasks.length) * 100) : 0,
+      completionRate: dayTasks.length > 0 ? Math.round((completed / dayTasks.length) * 100) : 0,
+      plannedMinutes: dayTasks.reduce((sum, task) => sum + task.duration, 0),
+      focusMinutes: 0,
+      wakeTime: null,
+      hadBreakfast: null,
+      morningEnergy: null,
+      eveningEnergy: null,
+      focusSelected: false,
+      focusCompleted: false,
+      closed: false,
     }
   })
-  const completedThisWeek = tasks.filter((task) => {
-    if (task.skipped) return false
-    const date = task.completedAt?.slice(0, 10) ?? taskReviewDate(task)
-    return task.completed && date !== null && weekDates.includes(date)
-  })
+  const hasServerReview = summary.weekStart !== ''
+  const daily = summary.days.length > 0 ? summary.days : fallbackDaily
+  const completedCount = hasServerReview ? summary.completed : fallbackCompleted.length
+  const totalCount = hasServerReview ? summary.total : weekTasks.length
+  const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
+  const completedMinutes = hasServerReview ? summary.completedMinutes : fallbackCompleted.reduce((sum, task) => sum + task.duration, 0)
+  const completedThisWeek = tasks.filter((task) => task.completed && !task.skipped && weekDates.includes(task.completedAt?.slice(0, 10) ?? taskReviewDate(task) ?? ''))
   const categoryMinutes = completedThisWeek.reduce<Record<string, { label: string; color: string; minutes: number }>>((result, task) => {
     const key = task.category || '未分类'
     const current = result[key] ?? { label: key, color: task.color, minutes: 0 }
@@ -2000,52 +2024,70 @@ function ReviewPage({ summary, tasks }: { summary: ReviewSummary; tasks: Task[] 
   const totalCategoryMinutes = completedThisWeek.reduce((sum, task) => sum + task.duration, 0)
   const categoryInvestment = Object.values(categoryMinutes)
     .sort((left, right) => right.minutes - left.minutes)
-    .map((category) => ({
-      ...category,
-      value: totalCategoryMinutes > 0 ? Math.round((category.minutes / totalCategoryMinutes) * 100) : 0,
-    }))
-  const hasDailyData = daily.some((day) => day.total > 0)
+    .map((category) => ({ ...category, value: totalCategoryMinutes > 0 ? Math.round((category.minutes / totalCategoryMinutes) * 100) : 0 }))
+  const hasDailyData = daily.some((day) => day.total > 0 || day.wakeTime || day.morningEnergy !== null || day.focusMinutes > 0)
   const strongestCategory = categoryInvestment[0]
   const hours = Math.floor(completedMinutes / 60)
   const minutes = completedMinutes % 60
+  const focusHours = Math.floor(summary.focusActualMinutes / 60)
+  const focusMinutes = summary.focusActualMinutes % 60
+  const movedCount = summary.carryovers.tomorrow + summary.carryovers.later + summary.carryovers.drop
+  const energyChange = summary.averageMorningEnergy !== null && summary.averageEveningEnergy !== null
+    ? Math.round((summary.averageEveningEnergy - summary.averageMorningEnergy) * 10) / 10
+    : null
+  const weekLabel = summary.weekStart ? `${summary.weekStart.slice(5).replace('-', '.')}–${summary.weekEnd.slice(5).replace('-', '.')}` : '本周'
+
   return (
-    <div className="page-content">
+    <div className="page-content review-page-v2">
       <section className="page-heading">
         <div><p className="eyebrow">REVIEW</p><h1>回顾</h1><p>看见真实的节奏，再决定下一步。</p></div>
-        <span className="date-button review-period">本周</span>
+        <div className="review-heading-actions"><span className="date-button review-period">{weekLabel}</span><button type="button" className="primary-button" onClick={onAiPlan}><Sparkles size={16} />准备下周</button></div>
       </section>
       <section className="review-overview">
-        <div className="review-score"><span>本周完成率</span><strong>{completionRate}%</strong><p>每一次完成都会记录</p></div>
-        <div><CheckCircle2 size={20} /><span>完成任务</span><strong>{completedCount}</strong><small>共计划 {totalCount} 项</small></div>
-        <div><Clock3 size={20} /><span>投入时间</span><strong>{hours}h {minutes}m</strong><small>按已完成任务估算</small></div>
-        <div><TimerReset size={20} /><span>逾期任务</span><strong>{summary.overdue}</strong><small>可以随时重新安排</small></div>
+        <div className="review-score"><span>本周完成率</span><strong>{completionRate}%</strong><p>完成 {completedCount}/{totalCount} 项</p></div>
+        <div><TimerReset size={20} /><span>真实专注</span><strong>{focusHours}h {focusMinutes}m</strong><small>计划专注 {Math.floor(summary.focusPlannedMinutes / 60)}h {summary.focusPlannedMinutes % 60}m</small></div>
+        <div><Flag size={20} /><span>每日重点</span><strong>{summary.dailyFocusRate}%</strong><small>完成 {summary.dailyFocusCompleted}/{summary.dailyFocusSelected} 天</small></div>
+        <div><CornerDownRight size={20} /><span>任务迁移</span><strong>{movedCount}</strong><small>明天、以后或放弃</small></div>
       </section>
       <div className="review-grid">
         <section className="content-section chart-section">
           <div className="section-title-row"><div><h2>每日完成情况</h2><span>任务完成率</span></div><TrendingUp size={18} /></div>
           {hasDailyData ? <div className="bar-chart">
-            {daily.map((day, index) => <div key={weekDates[index]}><span className={weekDates[index] === berlinIsoDate() ? 'today' : ''} style={{ height: `${day.value}%` }}><i>{day.value}%</i></span><small>周{weekDays[index]}</small></div>)}
+            {daily.map((day, index) => <div key={day.date}><span className={day.date === berlinIsoDate() ? 'today' : ''} style={{ height: `${Math.max(5, day.completionRate)}%` }}><i>{day.total > 0 ? `${day.completionRate}%` : '–'}</i></span><small>周{weekDays[index]}</small></div>)}
           </div> : <div className="review-empty"><BarChart3 size={20} /><strong>本周还没有任务记录</strong><span>完成任务后，这里会生成真实趋势。</span></div>}
         </section>
         <section className="content-section category-section">
           <div className="section-title-row"><div><h2>时间投入</h2><span>按生活领域</span></div></div>
-          {categoryInvestment.map((category) => (
-            <div className="category-row" key={category.label}>
-              <span className="category-dot" style={{ backgroundColor: category.color }} />
-              <strong>{category.label}</strong>
-              <ProgressBar value={category.value} color={category.color} />
-              <span>{Math.floor(category.minutes / 60)}h {category.minutes % 60}m</span>
-            </div>
-          ))}
+          {categoryInvestment.map((category) => <div className="category-row" key={category.label}><span className="category-dot" style={{ backgroundColor: category.color }} /><strong>{category.label}</strong><ProgressBar value={category.value} color={category.color} /><span>{Math.floor(category.minutes / 60)}h {category.minutes % 60}m</span></div>)}
           {categoryInvestment.length === 0 && <div className="review-empty compact"><Clock3 size={20} /><strong>暂无时间投入</strong><span>只统计本周已完成任务的预计时长。</span></div>}
         </section>
       </div>
+      <section className="content-section rhythm-review-section">
+        <div className="section-title-row"><div><h2>每日生活节奏</h2><span>晨间、精力和收尾记录</span></div><span>{summary.morningCheckins} 次启动 · {summary.eveningCheckins} 次收尾</span></div>
+        <div className="rhythm-review-table">
+          <div className="rhythm-review-head"><span>日期</span><span>起床</span><span>早餐</span><span>晨间精力</span><span>真实专注</span><span>今日重点</span><span>收尾</span></div>
+          {daily.map((day, index) => <div className={day.date === berlinIsoDate() ? 'today' : ''} key={day.date}>
+            <strong>周{weekDays[index]}<small>{day.date.slice(5).replace('-', '.')}</small></strong>
+            <span>{day.wakeTime ?? '–'}</span>
+            <span>{day.hadBreakfast === null ? '–' : day.hadBreakfast ? '已吃' : '未吃'}</span>
+            <span>{day.morningEnergy === null ? '–' : `${day.morningEnergy}/5`}{day.eveningEnergy !== null && <small>晚 {day.eveningEnergy}/5</small>}</span>
+            <span>{day.focusMinutes > 0 ? `${Math.floor(day.focusMinutes / 60)}h ${day.focusMinutes % 60}m` : '–'}</span>
+            <span className={day.focusCompleted ? 'positive' : ''}>{day.focusSelected ? day.focusCompleted ? '已完成' : '未完成' : '–'}</span>
+            <span className={day.closed ? 'positive' : ''}>{day.closed ? '已收尾' : '–'}</span>
+          </div>)}
+        </div>
+      </section>
+      <section className="review-carryover-band" aria-label="任务迁移明细">
+        <div><CornerDownRight size={18} /><span>推到明天</span><strong>{summary.carryovers.tomorrow}</strong></div>
+        <div><Archive size={18} /><span>留到以后</span><strong>{summary.carryovers.later}</strong></div>
+        <div><Trash2 size={18} /><span>跳过或放弃</span><strong>{summary.carryovers.drop}</strong></div>
+      </section>
       <section className="content-section reflection-section">
         <div className="section-title-row"><div><h2>本周观察</h2><span>根据现有记录自动整理</span></div></div>
         <div className="reflection-grid">
-          <div><strong>本周完成</strong><p>{totalCount > 0 ? `完成 ${completedCount} 项，共记录 ${totalCount} 项，完成率 ${completionRate}%。` : '还没有可供回顾的任务记录。'}</p></div>
-          <div><strong>需要留意</strong><p>{summary.overdue > 0 ? `目前有 ${summary.overdue} 项逾期任务，可以重新安排到合适的时间。` : '目前没有逾期任务。'}</p></div>
-          <div><strong>主要投入</strong><p>{strongestCategory ? `${strongestCategory.label}投入最多，共 ${Math.floor(strongestCategory.minutes / 60)} 小时 ${strongestCategory.minutes % 60} 分钟。` : '完成带分类的任务后，这里会显示主要投入方向。'}</p></div>
+          <div><strong>本周投入</strong><p>{totalCount > 0 ? `完成 ${completedCount} 项，预计投入 ${hours} 小时 ${minutes} 分钟；其中真实专注 ${focusHours} 小时 ${focusMinutes} 分钟。` : '还没有可供回顾的任务记录。'}</p></div>
+          <div><strong>生活节奏</strong><p>{summary.averageWakeTime ? `平均 ${summary.averageWakeTime} 起床，${summary.breakfastDays} 天记录了早餐${energyChange === null ? '。' : `；从早到晚精力变化 ${energyChange > 0 ? '+' : ''}${energyChange}。`}` : '完成晨间启动后，这里会显示起床与精力趋势。'}</p></div>
+          <div><strong>下周线索</strong><p>{movedCount > 0 ? `本周有 ${movedCount} 次任务迁移；准备下周时应主动减少负荷。` : strongestCategory ? `${strongestCategory.label}投入最多，可以继续保留这个节奏。` : '继续记录几天后，这里会给出下周线索。'}</p></div>
         </div>
       </section>
     </div>
@@ -2457,6 +2499,7 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [toast, setToast] = useState('')
   const [aiPlannerOpen, setAiPlannerOpen] = useState(false)
+  const [aiPlanScope, setAiPlanScope] = useState<'today' | 'next_week'>('today')
   const [aiPlan, setAiPlan] = useState<AiPlan | null>(null)
   const [aiPlanLoading, setAiPlanLoading] = useState(false)
   const [aiPlanApplying, setAiPlanApplying] = useState(false)
@@ -2561,10 +2604,12 @@ export default function App() {
     window.setTimeout(() => setToast(''), 2200)
   }
 
-  function demoAiPlan(): AiPlan {
+  function demoAiPlan(scope: 'today' | 'next_week'): AiPlan {
     const source = tasks.filter((task) => !task.completed && task.unscheduled).slice(0, 8)
     if (source.length === 0) throw new Error('收集箱里没有需要安排的任务。')
     const today = berlinIsoDate()
+    const targetStart = scope === 'next_week' ? shiftIsoDate(currentWeekDateIso(0), 7) : today
+    const targetDays = scope === 'next_week' ? 7 : 1
     const nowParts = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Europe/Berlin',
       hour: '2-digit',
@@ -2590,9 +2635,9 @@ export default function App() {
     source.forEach((task) => {
       const duration = Math.max(1, task.duration)
       let slot: { date: string; start: number } | null = null
-      for (let dayOffset = 0; dayOffset < 7 && !slot; dayOffset += 1) {
-        const date = shiftIsoDate(today, dayOffset)
-        let cursor = dayOffset === 0
+      for (let dayOffset = 0; dayOffset < targetDays && !slot; dayOffset += 1) {
+        const date = shiftIsoDate(targetStart, dayOffset)
+        let cursor = scope === 'today' && dayOffset === 0
           ? Math.max(8 * 60, Math.ceil((nowMinutes + 15) / 15) * 15)
           : 8 * 60
         while (cursor + duration <= 21 * 60) {
@@ -2631,20 +2676,25 @@ export default function App() {
     return {
       id: -1,
       model: 'demo',
-      summary: `已为 ${items.length} 项任务留出完整时间，并在任务之间保留缓冲。`,
+      summary: scope === 'next_week' ? `根据本周节奏，为下周 ${items.length} 项灵活任务留出了完整时间。` : `已为 ${items.length} 项任务留出完整时间，并在任务之间保留缓冲。`,
+      adjustments: scope === 'next_week' ? ['把最费脑力的任务放在精力更好的上午。', '午餐和晚餐前后保留缓冲，不用把一周塞满。', '每天只保留一个真正重要的重点。'] : ['先完成唯一重点，再处理低优先级任务。'],
       items,
       skipped,
       remainingUses: 1,
       expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      scope,
+      targetStartDate: targetStart,
+      targetEndDate: shiftIsoDate(targetStart, targetDays - 1),
     }
   }
 
-  async function generateAiPlan() {
+  async function generateAiPlan(scope: 'today' | 'next_week' = aiPlanScope) {
+    setAiPlanScope(scope)
     setAiPlanLoading(true)
     setAiPlan(null)
     setAiPlanError('')
     try {
-      setAiPlan(demoMode ? demoAiPlan() : await api.createAiPlan())
+      setAiPlan(demoMode ? demoAiPlan(scope) : scope === 'next_week' ? await api.createWeeklyAiPlan() : await api.createAiPlan())
     } catch (error) {
       setAiPlanError(error instanceof Error ? error.message : 'AI 暂时无法生成安排，请稍后再试。')
     } finally {
@@ -2652,9 +2702,10 @@ export default function App() {
     }
   }
 
-  function openAiPlanner() {
+  function openAiPlanner(scope: 'today' | 'next_week' = 'today') {
+    setAiPlanScope(scope)
     setAiPlannerOpen(true)
-    void generateAiPlan()
+    void generateAiPlan(scope)
   }
 
   async function applyAiPlan() {
@@ -2683,7 +2734,7 @@ export default function App() {
       }
       setAiPlannerOpen(false)
       setAiPlan(null)
-      showToast(`已采用 ${aiPlan.items.length} 项 AI 安排`)
+      showToast(aiPlan.scope === 'next_week' ? `下周 ${aiPlan.items.length} 项安排已写入` : `已采用 ${aiPlan.items.length} 项 AI 安排`)
     } catch (error) {
       setAiPlanError(error instanceof Error ? error.message : 'AI 安排保存失败，请稍后再试。')
     } finally {
@@ -3400,7 +3451,7 @@ export default function App() {
         {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor({ type: 'task', schedule: true })} onOpenTask={openTask} />}
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
         {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} />}
-        {page === 'review' && <ReviewPage summary={review} tasks={tasks} />}
+        {page === 'review' && <ReviewPage summary={review} tasks={tasks} onAiPlan={() => openAiPlanner('next_week')} />}
         {page === 'settings' && <SettingsPage settings={settings} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} backups={backups} onSectionChange={navigateSettings} onSave={saveSettings} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onCreateBackup={createBackup} onPreviewBackup={previewBackup} onPreviewStoredBackup={previewStoredBackup} onRestoreBackup={restoreBackup} onRestoreStoredBackup={restoreStoredBackup} onDownloadStoredBackup={downloadStoredBackup} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
@@ -3410,7 +3461,7 @@ export default function App() {
       {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}
       {dailyFlow === 'morning' && <MorningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={saveMorningCheckin} onSkip={skipMorningCheckin} />}
       {dailyFlow === 'evening' && <EveningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={closeDailyRhythm} />}
-      {aiPlannerOpen && <AiPlannerModal plan={aiPlan} loading={aiPlanLoading} applying={aiPlanApplying} error={aiPlanError} onClose={() => setAiPlannerOpen(false)} onRetry={() => void generateAiPlan()} onApply={() => void applyAiPlan()} />}
+      {aiPlannerOpen && <AiPlannerModal scope={aiPlanScope} plan={aiPlan} loading={aiPlanLoading} applying={aiPlanApplying} error={aiPlanError} onClose={() => setAiPlannerOpen(false)} onRetry={() => void generateAiPlan(aiPlanScope)} onApply={() => void applyAiPlan()} />}
       {toast && <div className="toast"><CheckCircle2 size={17} />{toast}</div>}
       {idleWarning && <FocusIdleWarningDialog warning={idleWarning} secondsLeft={idleSecondsLeft} onContinue={dismissIdleWarning} onPause={() => void pauseForIdle(idleWarning)} />}
     </div>

@@ -160,6 +160,11 @@ export const api = {
     return result.plan
   },
 
+  async createWeeklyAiPlan(): Promise<AiPlan> {
+    const result = await request<{ plan: AiPlan }>('ai.plan.week', { method: 'POST', body: {} })
+    return result.plan
+  },
+
   async applyAiPlan(planId: number): Promise<BootstrapData> {
     return request<BootstrapData>('ai.apply', { method: 'POST', body: { planId } })
   },
