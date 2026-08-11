@@ -6,7 +6,16 @@ APP_ROOT="/www/wwwroot/life.snowmoon1824.top"
 
 cd "$APP_ROOT"
 
-composer install --no-dev --prefer-dist --optimize-autoloader
+if ! composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction; then
+  echo "==> Composer lockfile is stale; refreshing PHP dependencies"
+  composer update --no-dev --prefer-dist --optimize-autoloader --no-interaction
+fi
+
+if ! php -r 'require "vendor/autoload.php"; exit(class_exists("Minishlink\\WebPush\\VAPID") ? 0 : 1);'; then
+  echo "==> Web Push dependency is missing; refreshing PHP dependencies"
+  composer update --no-dev --prefer-dist --optimize-autoloader --no-interaction
+fi
+
 php server/scripts/ensure-vapid-keys.php
 php server/scripts/migrate.php
 php server/scripts/create-admin.php
