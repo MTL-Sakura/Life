@@ -31,5 +31,4 @@ $lines = "\n# Browser Web Push\n"
 if (file_put_contents($envPath, $lines, FILE_APPEND | LOCK_EX) === false) {
     throw new RuntimeException('Unable to write Web Push keys to .env.');
 }
-chmod($envPath, 0600);
 echo "Web Push keys generated and saved to .env.\n";

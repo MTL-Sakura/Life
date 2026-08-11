@@ -17,6 +17,14 @@ if ! php -r 'require "vendor/autoload.php"; exit(class_exists("Minishlink\\WebPu
 fi
 
 php server/scripts/ensure-vapid-keys.php
+
+if id www >/dev/null 2>&1; then
+  chown root:www .env
+  chmod 640 .env
+else
+  chmod 600 .env
+fi
+
 php server/scripts/migrate.php
 php server/scripts/create-admin.php
 
