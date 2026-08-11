@@ -1,4 +1,4 @@
-import type { AiPlan, BackupPreview, BootstrapData, Habit, PlanImportDocument, PlanImportResult, Project, SessionUser, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BackupPreview, BootstrapData, EveningDecision, Habit, MorningCheckinInput, PlanImportDocument, PlanImportResult, Project, SessionUser, Subtask, Task, UserSettings } from './types'
 
 let csrfToken: string | null = null
 
@@ -84,6 +84,18 @@ export const api = {
   async focusTask(taskId: number, action: 'start' | 'pause' | 'resume' | 'end', idleSeconds = 0): Promise<Task> {
     const result = await request<{ task: Task }>(`focus.${action}`, { method: 'POST', body: { taskId, idleSeconds } })
     return result.task
+  },
+
+  async saveMorning(input: MorningCheckinInput): Promise<BootstrapData> {
+    return request<BootstrapData>('daily.morning', { method: 'POST', body: input })
+  },
+
+  async skipMorning(): Promise<BootstrapData> {
+    return request<BootstrapData>('daily.morning.skip', { method: 'POST', body: {} })
+  },
+
+  async closeDay(energy: number, reflection: string, decisions: EveningDecision[]): Promise<BootstrapData> {
+    return request<BootstrapData>('daily.close', { method: 'POST', body: { energy, reflection, decisions } })
   },
 
   async createHabit(input: Partial<Habit> & { name: string }): Promise<BootstrapData> {

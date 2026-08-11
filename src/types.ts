@@ -130,6 +130,34 @@ export type UserSettings = {
   planningBufferMinutes: number
 }
 
+export type DailyRhythm = {
+  date: string
+  morningStatus: 'pending' | 'completed' | 'skipped'
+  wakeTime: string | null
+  hadBreakfast: boolean | null
+  morningEnergy: number | null
+  focusTaskId: number | null
+  focusTaskTitle: string | null
+  morningCompletedAt: string | null
+  eveningEnergy: number | null
+  reflection: string
+  closedAt: string | null
+  morningStreak: number
+  eveningStreak: number
+}
+
+export type MorningCheckinInput = {
+  wakeTime: string
+  hadBreakfast: boolean
+  energy: number
+  focusTaskId: number | null
+}
+
+export type EveningDecision = {
+  taskId: number
+  action: 'tomorrow' | 'later' | 'drop'
+}
+
 export type ReviewSummary = {
   total: number
   completed: number
@@ -259,6 +287,7 @@ export type BootstrapData = {
   categories: Category[]
   planImports: PlanImportBatch[]
   backups: BackupRecord[]
+  dailyRhythm: DailyRhythm
   settings: UserSettings
   review: ReviewSummary
   csrfToken: string

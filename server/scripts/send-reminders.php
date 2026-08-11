@@ -17,7 +17,7 @@ sendOverdueSummaries($db, $mailer, $nowUtc);
 function sendTaskReminders(PDO $db, Mailer $mailer, DateTimeImmutable $nowUtc): void
 {
     $statement = $db->prepare(
-        'SELECT tasks.id, tasks.title, tasks.start_at, users.email, users.timezone
+        'SELECT tasks.id, tasks.user_id, tasks.title, tasks.start_at, users.email, users.timezone
          FROM tasks
          INNER JOIN users ON users.id = tasks.user_id
          INNER JOIN user_settings ON user_settings.user_id = users.id
@@ -36,6 +36,10 @@ function sendTaskReminders(PDO $db, Mailer $mailer, DateTimeImmutable $nowUtc): 
 
     $markSent = $db->prepare('UPDATE tasks SET reminder_sent_at = ? WHERE id = ? AND reminder_sent_at IS NULL');
     foreach ($statement->fetchAll() as $task) {
+        $localDate = $nowUtc->setTimezone(new DateTimeZone($task['timezone']))->format('Y-m-d');
+        if (dayClosed($db, (int) $task['user_id'], $localDate)) {
+            continue;
+        }
         try {
             $start = (new DateTimeImmutable($task['start_at'], new DateTimeZone('UTC')))
                 ->setTimezone(new DateTimeZone($task['timezone']));
@@ -70,6 +74,9 @@ function sendDailySummaries(PDO $db, Mailer $mailer, DateTimeImmutable $nowUtc):
         }
 
         $reference = $localNow->format('Y-m-d');
+        if (dayClosed($db, (int) $user['id'], $reference)) {
+            continue;
+        }
         if (notificationExists($db, (int) $user['id'], 'daily_summary', $reference)) {
             continue;
         }
@@ -175,6 +182,13 @@ function notificationExists(PDO $db, int $userId, string $type, string $referenc
     $statement = $db->prepare('SELECT 1 FROM notification_logs WHERE user_id = ? AND type = ? AND reference_key = ? LIMIT 1');
     $statement->execute([$userId, $type, $reference]);
     return (bool) $statement->fetchColumn();
+}
+
+function dayClosed(PDO $db, int $userId, string $localDate): bool
+{
+    $statement = $db->prepare('SELECT 1 FROM daily_checkins WHERE user_id = ? AND local_date = ? AND closed_at IS NOT NULL LIMIT 1');
+    $statement->execute([$userId, $localDate]);
+    return $statement->fetchColumn() !== false;
 }
 
 function recordNotification(PDO $db, int $userId, string $type, string $reference, DateTimeImmutable $sentAt): void

@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS daily_checkins (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    local_date DATE NOT NULL,
+    wake_time TIME NULL,
+    had_breakfast TINYINT(1) NULL,
+    morning_energy TINYINT UNSIGNED NULL,
+    daily_focus_task_id BIGINT UNSIGNED NULL,
+    morning_completed_at DATETIME NULL,
+    morning_skipped_at DATETIME NULL,
+    evening_energy TINYINT UNSIGNED NULL,
+    reflection TEXT NULL,
+    closed_at DATETIME NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY daily_checkins_user_date_unique (user_id, local_date),
+    INDEX daily_checkins_focus_task_idx (daily_focus_task_id),
+    CONSTRAINT daily_checkins_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT daily_checkins_focus_task_fk FOREIGN KEY (daily_focus_task_id) REFERENCES tasks(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

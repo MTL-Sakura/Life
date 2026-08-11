@@ -361,6 +361,101 @@ switch ($action) {
         }
         Http::json(['task' => findTask($db, $taskId, $userId, $timezone)]);
 
+    case 'daily.morning':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $wakeTime = validTime(nullableString($input['wakeTime'] ?? null));
+        $energy = validEnergy($input['energy'] ?? null);
+        $focusTaskId = nullableInt($input['focusTaskId'] ?? null);
+        if ($wakeTime === null || $energy === null) {
+            Http::json(['error' => '请填写起床时间和今日精力。'], 422);
+        }
+        if ($focusTaskId !== null) {
+            $focusTask = ownedRow($db, 'tasks', $focusTaskId, $userId);
+            if (in_array($focusTask['status'], ['completed', 'cancelled'], true)) {
+                Http::json(['error' => '今日重点必须是尚未完成的任务。'], 422);
+            }
+        }
+        $today = (new DateTimeImmutable('today', new DateTimeZone($timezone)))->format('Y-m-d');
+        $now = gmdate('Y-m-d H:i:s');
+        $statement = $db->prepare(
+            'INSERT INTO daily_checkins (user_id, local_date, wake_time, had_breakfast, morning_energy, daily_focus_task_id, morning_completed_at, morning_skipped_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+             ON DUPLICATE KEY UPDATE wake_time = VALUES(wake_time), had_breakfast = VALUES(had_breakfast), morning_energy = VALUES(morning_energy), daily_focus_task_id = VALUES(daily_focus_task_id), morning_completed_at = VALUES(morning_completed_at), morning_skipped_at = NULL'
+        );
+        $statement->execute([$userId, $today, $wakeTime, (int) (bool) ($input['hadBreakfast'] ?? false), $energy, $focusTaskId, $now]);
+        Http::json(bootstrapData($db, $userId, $timezone));
+
+    case 'daily.morning.skip':
+        Http::requireMethod('POST');
+        $today = (new DateTimeImmutable('today', new DateTimeZone($timezone)))->format('Y-m-d');
+        $now = gmdate('Y-m-d H:i:s');
+        $statement = $db->prepare(
+            'INSERT INTO daily_checkins (user_id, local_date, morning_skipped_at) VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE morning_skipped_at = IF(morning_completed_at IS NULL, VALUES(morning_skipped_at), morning_skipped_at)'
+        );
+        $statement->execute([$userId, $today, $now]);
+        Http::json(bootstrapData($db, $userId, $timezone));
+
+    case 'daily.close':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $energy = validEnergy($input['energy'] ?? null);
+        if ($energy === null) {
+            Http::json(['error' => '请选择今晚的精力状态。'], 422);
+        }
+        $reflection = trim((string) ($input['reflection'] ?? ''));
+        $reflectionLength = function_exists('mb_strlen') ? mb_strlen($reflection) : strlen($reflection);
+        if ($reflectionLength > 2000) {
+            Http::json(['error' => '今日感受请控制在 2000 字以内。'], 422);
+        }
+        $decisions = is_array($input['decisions'] ?? null) ? $input['decisions'] : [];
+        if (count($decisions) > 200) {
+            Http::json(['error' => '一次处理的任务太多。'], 422);
+        }
+        $today = (new DateTimeImmutable('today', new DateTimeZone($timezone)))->format('Y-m-d');
+        $now = gmdate('Y-m-d H:i:s');
+        $db->beginTransaction();
+        try {
+            $checkinStatement = $db->prepare('SELECT closed_at FROM daily_checkins WHERE user_id = ? AND local_date = ? LIMIT 1 FOR UPDATE');
+            $checkinStatement->execute([$userId, $today]);
+            $existingCheckin = $checkinStatement->fetch();
+            if ($existingCheckin && !empty($existingCheckin['closed_at'])) {
+                $db->commit();
+                Http::json(bootstrapData($db, $userId, $timezone));
+            }
+            $seen = [];
+            foreach ($decisions as $decision) {
+                if (!is_array($decision)) {
+                    continue;
+                }
+                $taskId = (int) ($decision['taskId'] ?? 0);
+                $choice = (string) ($decision['action'] ?? 'later');
+                if ($taskId < 1 || isset($seen[$taskId]) || !in_array($choice, ['tomorrow', 'later', 'drop'], true)) {
+                    continue;
+                }
+                $seen[$taskId] = true;
+                $taskStatement = $db->prepare("SELECT * FROM tasks WHERE id = ? AND user_id = ? AND status NOT IN ('completed', 'cancelled') LIMIT 1 FOR UPDATE");
+                $taskStatement->execute([$taskId, $userId]);
+                $task = $taskStatement->fetch();
+                if (!$task) {
+                    continue;
+                }
+                applyEveningDecision($db, $task, $choice, $timezone, $now);
+            }
+            $statement = $db->prepare(
+                'INSERT INTO daily_checkins (user_id, local_date, evening_energy, reflection, closed_at)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE evening_energy = VALUES(evening_energy), reflection = VALUES(reflection), closed_at = VALUES(closed_at)'
+            );
+            $statement->execute([$userId, $today, $energy, $reflection, $now]);
+            $db->commit();
+        } catch (Throwable $error) {
+            $db->rollBack();
+            throw $error;
+        }
+        Http::json(bootstrapData($db, $userId, $timezone));
+
     case 'habits.create':
         Http::requireMethod('POST');
         $input = Http::input();
@@ -710,10 +805,125 @@ function bootstrapData(PDO $db, int $userId, string $timezone): array
         'categories' => $categories,
         'planImports' => planImports($db, $userId),
         'backups' => (new BackupManager())->records($db, $userId),
+        'dailyRhythm' => dailyRhythmData($db, $userId, $timezone),
         'settings' => settingsView($settingsRow),
         'review' => reviewData($db, $userId, $weekStartUtc, $weekEndUtc),
         'csrfToken' => Auth::csrfToken(),
     ];
+}
+
+function dailyRhythmData(PDO $db, int $userId, string $timezone): array
+{
+    $today = new DateTimeImmutable('today', new DateTimeZone($timezone));
+    $date = $today->format('Y-m-d');
+    $statement = $db->prepare(
+        'SELECT daily_checkins.*, tasks.title AS focus_task_title
+         FROM daily_checkins LEFT JOIN tasks ON tasks.id = daily_checkins.daily_focus_task_id
+         WHERE daily_checkins.user_id = ? AND daily_checkins.local_date = ? LIMIT 1'
+    );
+    $statement->execute([$userId, $date]);
+    $row = $statement->fetch() ?: [];
+    $morningCompleted = !empty($row['morning_completed_at']);
+    $morningSkipped = !$morningCompleted && !empty($row['morning_skipped_at']);
+
+    return [
+        'date' => $date,
+        'morningStatus' => $morningCompleted ? 'completed' : ($morningSkipped ? 'skipped' : 'pending'),
+        'wakeTime' => isset($row['wake_time']) ? substr((string) $row['wake_time'], 0, 5) : null,
+        'hadBreakfast' => isset($row['had_breakfast']) ? (bool) $row['had_breakfast'] : null,
+        'morningEnergy' => isset($row['morning_energy']) ? (int) $row['morning_energy'] : null,
+        'focusTaskId' => isset($row['daily_focus_task_id']) ? (int) $row['daily_focus_task_id'] : null,
+        'focusTaskTitle' => $row['focus_task_title'] ?? null,
+        'morningCompletedAt' => localTimestampView($row['morning_completed_at'] ?? null, $timezone),
+        'eveningEnergy' => isset($row['evening_energy']) ? (int) $row['evening_energy'] : null,
+        'reflection' => $row['reflection'] ?? '',
+        'closedAt' => localTimestampView($row['closed_at'] ?? null, $timezone),
+        'morningStreak' => dailyCheckinStreak($db, $userId, 'morning_completed_at', $timezone),
+        'eveningStreak' => dailyCheckinStreak($db, $userId, 'closed_at', $timezone),
+    ];
+}
+
+function dailyCheckinStreak(PDO $db, int $userId, string $column, string $timezone): int
+{
+    if (!in_array($column, ['morning_completed_at', 'closed_at'], true)) {
+        return 0;
+    }
+    $today = (new DateTimeImmutable('today', new DateTimeZone($timezone)))->format('Y-m-d');
+    $statement = $db->prepare("SELECT local_date FROM daily_checkins WHERE user_id = ? AND {$column} IS NOT NULL AND local_date <= ? ORDER BY local_date DESC LIMIT 400");
+    $statement->execute([$userId, $today]);
+    return calculateStreak($statement->fetchAll(PDO::FETCH_COLUMN), $timezone);
+}
+
+function localTimestampView(mixed $value, string $timezone): ?string
+{
+    if ($value === null || $value === '') {
+        return null;
+    }
+    return (new DateTimeImmutable((string) $value, new DateTimeZone('UTC')))
+        ->setTimezone(new DateTimeZone($timezone))
+        ->format(DATE_ATOM);
+}
+
+function applyEveningDecision(PDO $db, array $task, string $choice, string $timezone, string $now): void
+{
+    endFocusSessionForEvening($db, (int) $task['id'], $now);
+
+    if ($choice === 'drop') {
+        if (nullableString($task['recurrence_rule'] ?? null) !== null) {
+            createNextRecurringTask($db, $task, $timezone);
+        }
+        $db->prepare("UPDATE tasks SET status = 'cancelled', occurrence_state = 'skipped', reminder_at = NULL, reminder_sent_at = NULL WHERE id = ? AND user_id = ?")
+            ->execute([(int) $task['id'], (int) $task['user_id']]);
+        return;
+    }
+
+    if (nullableString($task['recurrence_rule'] ?? null) !== null) {
+        createNextRecurringTask($db, $task, $timezone);
+        $db->prepare('UPDATE tasks SET recurrence_rule = NULL, recurrence_series_id = NULL WHERE id = ? AND user_id = ?')
+            ->execute([(int) $task['id'], (int) $task['user_id']]);
+    }
+    $db->prepare('DELETE FROM task_schedule_blocks WHERE task_id = ? AND user_id = ?')
+        ->execute([(int) $task['id'], (int) $task['user_id']]);
+
+    if ($choice === 'later') {
+        $db->prepare("UPDATE tasks SET status = 'inbox', start_at = NULL, end_at = NULL, schedule_mode = 'flexible', reminder_at = NULL, reminder_sent_at = NULL WHERE id = ? AND user_id = ?")
+            ->execute([(int) $task['id'], (int) $task['user_id']]);
+        return;
+    }
+
+    $zone = new DateTimeZone($timezone);
+    $tomorrow = new DateTimeImmutable('tomorrow', $zone);
+    $originalStart = empty($task['start_at'])
+        ? null
+        : (new DateTimeImmutable((string) $task['start_at'], new DateTimeZone('UTC')))->setTimezone($zone);
+    $hour = $originalStart?->format('H') ?? '09';
+    $minute = $originalStart?->format('i') ?? '00';
+    $startLocal = $tomorrow->setTime((int) $hour, (int) $minute);
+    $endLocal = $startLocal->modify('+' . max(1, (int) $task['estimated_minutes']) . ' minutes');
+    $startUtc = $startLocal->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    $endUtc = $endLocal->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    $dueAt = $task['due_at'] ?? null;
+    if ($dueAt !== null) {
+        $dueLocal = (new DateTimeImmutable((string) $dueAt, new DateTimeZone('UTC')))->setTimezone($zone);
+        if ($dueLocal->format('Y-m-d') <= $tomorrow->modify('-1 day')->format('Y-m-d')) {
+            $dueAt = $endUtc;
+        }
+    }
+    $reminderMinutes = isset($task['reminder_minutes']) ? (int) $task['reminder_minutes'] : null;
+    $db->prepare(
+        "UPDATE tasks SET status = 'planned', start_at = ?, end_at = ?, due_at = ?, occurrence_state = 'normal', reminder_at = ?, reminder_sent_at = NULL WHERE id = ? AND user_id = ?"
+    )->execute([$startUtc, $endUtc, $dueAt, reminderAt($startUtc, $reminderMinutes), (int) $task['id'], (int) $task['user_id']]);
+}
+
+function endFocusSessionForEvening(PDO $db, int $taskId, string $now): void
+{
+    $session = latestFocusSession($db, $taskId, true);
+    if ($session === null || !in_array($session['status'], ['running', 'paused'], true)) {
+        return;
+    }
+    $elapsed = $session['status'] === 'running' ? runningFocusElapsed($session) : (int) $session['elapsed_seconds'];
+    $db->prepare("UPDATE focus_sessions SET status = 'completed', elapsed_seconds = ?, last_resumed_at = NULL, ended_at = ? WHERE id = ?")
+        ->execute([$elapsed, $now, (int) $session['id']]);
 }
 
 function ensureRecurringTaskSeries(PDO $db, int $userId): void
@@ -1243,6 +1453,12 @@ function validPriority(string $value): string
 function validStatus(string $value): string
 {
     return in_array($value, ['inbox', 'planned', 'in_progress', 'completed', 'cancelled'], true) ? $value : 'inbox';
+}
+
+function validEnergy(mixed $value): ?int
+{
+    $energy = (int) $value;
+    return $energy >= 1 && $energy <= 5 ? $energy : null;
 }
 
 function validScheduleMode(string $value): string

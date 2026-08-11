@@ -549,6 +549,14 @@ p {
   display: flex;
   align-items: center;
   gap: 18px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.daily-flow-trigger {
+  border-color: #b8ac91;
+  color: #675939;
+  background: #faf5e9;
 }
 
 .ai-plan-trigger {
@@ -582,6 +590,56 @@ p {
 
 .today-progress .progress-track {
   grid-column: 1 / -1;
+}
+
+.daily-focus-banner {
+  width: 100%;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 12px;
+  margin: -10px 0 24px;
+  border: 1px solid #c5b994;
+  border-radius: 7px;
+  padding: 9px 14px;
+  color: var(--ink);
+  background: #faf5e7;
+  text-align: left;
+  cursor: pointer;
+}
+
+.daily-focus-banner > span {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: #725f2f;
+  background: #eee4c8;
+}
+
+.daily-focus-banner > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.daily-focus-banner small {
+  color: #8b7c59;
+  font-size: 8px;
+}
+
+.daily-focus-banner strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.daily-focus-banner > svg {
+  color: #8b8067;
 }
 
 .now-layout {
@@ -2792,6 +2850,329 @@ p {
   font-size: 21px;
 }
 
+.daily-flow-body {
+  display: grid;
+  gap: 20px;
+  padding: 22px;
+}
+
+.daily-flow-intro {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 13px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.daily-flow-intro > span {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: #725f2f;
+  background: #f2ead6;
+}
+
+.daily-flow-intro strong {
+  font-family: Georgia, "Songti SC", serif;
+  font-size: 15px;
+}
+
+.daily-flow-intro p {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.morning-basics {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.morning-basics label,
+.morning-basics fieldset,
+.energy-field {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.morning-basics label,
+.daily-focus-select,
+.reflection-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.morning-basics label > span,
+.morning-basics legend,
+.energy-field legend,
+.daily-focus-select > span,
+.reflection-field > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.morning-basics input,
+.daily-focus-select select,
+.reflection-field textarea {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--ink);
+  background: #fff;
+}
+
+.morning-basics input,
+.daily-focus-select select {
+  height: 42px;
+  padding: 0 12px;
+}
+
+.binary-choice,
+.energy-scale,
+.decision-control {
+  display: grid;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.binary-choice {
+  grid-template-columns: 1fr 1fr;
+}
+
+.binary-choice button,
+.energy-scale button,
+.decision-control button {
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.binary-choice button:last-child,
+.energy-scale button:last-child,
+.decision-control button:last-child {
+  border-right: 0;
+}
+
+.binary-choice button {
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 9px;
+}
+
+.binary-choice button.active,
+.energy-scale button.active,
+.decision-control button.active {
+  color: #fff;
+  background: var(--green);
+}
+
+.energy-field legend {
+  margin-bottom: 8px;
+}
+
+.energy-scale {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.energy-scale button {
+  min-width: 0;
+  height: 50px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.energy-scale strong {
+  font-size: 13px;
+}
+
+.energy-scale span {
+  font-size: 8px;
+}
+
+.daily-focus-select > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.daily-streak-note {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.daily-streak-note svg {
+  flex: 0 0 auto;
+  color: var(--gold);
+}
+
+.daily-streak-note strong {
+  color: var(--ink);
+}
+
+.modal-sheet > .daily-flow-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 0;
+  padding: 14px 22px;
+  border-top: 1px solid var(--line);
+  background: rgba(251, 250, 247, 0.97);
+  backdrop-filter: blur(10px);
+}
+
+.evening-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.evening-summary > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 13px;
+  border-right: 1px solid var(--line);
+}
+
+.evening-summary > div:last-child {
+  border-right: 0;
+}
+
+.evening-summary strong {
+  overflow: hidden;
+  font-family: Georgia, "Songti SC", serif;
+  font-size: 19px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evening-summary span {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.unfinished-decisions {
+  min-width: 0;
+}
+
+.unfinished-decisions > article {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 186px;
+  align-items: center;
+  gap: 14px;
+  border-top: 1px solid var(--line);
+  padding: 10px 0;
+}
+
+.unfinished-decisions > article:first-of-type {
+  margin-top: 8px;
+}
+
+.unfinished-decisions > article > div:first-child {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 5px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+
+.unfinished-decisions > article > div:first-child > span {
+  width: 4px;
+  height: 28px;
+  border-radius: 2px;
+}
+
+.unfinished-decisions article strong,
+.unfinished-decisions article small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unfinished-decisions article strong {
+  font-size: 10px;
+}
+
+.unfinished-decisions article small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.decision-control {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.decision-control button {
+  height: 32px;
+  font-size: 8px;
+}
+
+.evening-clear {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  color: var(--green);
+}
+
+.evening-clear > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.evening-clear strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.evening-clear span {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.reflection-field textarea {
+  min-height: 88px;
+  resize: vertical;
+  padding: 11px 12px;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
 .ai-plan-body {
   min-height: 280px;
   padding: 22px;
@@ -3844,11 +4225,19 @@ p {
 
   .today-heading-actions {
     width: 100%;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .today-heading-actions > button {
+    width: 100%;
+    padding: 0 10px;
   }
 
   .today-progress {
-    width: 110px;
+    width: 100%;
+    grid-column: 1 / -1;
   }
 
   .today-progress strong {
@@ -4190,6 +4579,42 @@ p {
     bottom: 0;
     margin: 0;
     padding: 14px 22px calc(14px + env(safe-area-inset-bottom));
+  }
+
+  .daily-flow-body {
+    gap: 18px;
+    padding: 18px;
+  }
+
+  .morning-basics {
+    grid-template-columns: 1fr;
+  }
+
+  .energy-scale span {
+    font-size: 7px;
+  }
+
+  .unfinished-decisions > article {
+    grid-template-columns: 1fr;
+    gap: 9px;
+    padding: 12px 0;
+  }
+
+  .modal-sheet > .daily-flow-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .modal-sheet > .daily-flow-actions .text-button {
+    grid-column: 1 / -1;
+    justify-self: center;
+  }
+
+  .daily-focus-banner {
+    margin-top: -4px;
   }
 
   .ai-plan-item {

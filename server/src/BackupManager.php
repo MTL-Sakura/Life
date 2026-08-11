@@ -13,7 +13,7 @@ use Throwable;
 
 final class BackupManager
 {
-    public const SCHEMA_VERSION = 6;
+    public const SCHEMA_VERSION = 7;
 
     public function export(PDO $db, int $userId, string $timezone): array
     {
@@ -34,6 +34,7 @@ final class BackupManager
             'aiPlans' => 'SELECT id, status, model, source_task_ids, target_start_date, target_end_date, proposal_json, error_message, input_tokens, output_tokens, expires_at, applied_at, created_at, updated_at FROM ai_plans WHERE user_id = ? ORDER BY id',
             'planImports' => 'SELECT id, import_key, document_name, imported_counts, created_at FROM plan_imports WHERE user_id = ? ORDER BY id',
             'planImportItems' => 'SELECT plan_import_items.id, plan_import_items.plan_import_id, plan_import_items.entity_type, plan_import_items.entity_id, plan_import_items.created_at FROM plan_import_items INNER JOIN plan_imports ON plan_imports.id = plan_import_items.plan_import_id WHERE plan_imports.user_id = ? ORDER BY plan_import_items.id',
+            'dailyCheckins' => 'SELECT * FROM daily_checkins WHERE user_id = ? ORDER BY local_date, id',
         ];
 
         $data = [];
@@ -141,7 +142,7 @@ final class BackupManager
 
         $db->beginTransaction();
         try {
-            foreach (['notification_logs', 'focus_sessions', 'task_schedule_blocks', 'subtasks', 'ai_plans'] as $table) {
+            foreach (['notification_logs', 'focus_sessions', 'task_schedule_blocks', 'subtasks', 'ai_plans', 'daily_checkins'] as $table) {
                 $this->deleteOwned($db, $table, $userId);
             }
             $db->prepare('DELETE FROM plan_imports WHERE user_id = ?')->execute([$userId]);
@@ -167,6 +168,7 @@ final class BackupManager
             $this->insertRows($db, 'ai_plans', (array) ($data['aiPlans'] ?? []), ['id', 'user_id', 'status', 'model', 'source_task_ids', 'target_start_date', 'target_end_date', 'proposal_json', 'error_message', 'input_tokens', 'output_tokens', 'expires_at', 'applied_at', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'plan_imports', (array) ($data['planImports'] ?? []), ['id', 'user_id', 'import_key', 'document_name', 'imported_counts', 'created_at'], $userId);
             $this->insertRows($db, 'plan_import_items', (array) ($data['planImportItems'] ?? []), ['id', 'plan_import_id', 'entity_type', 'entity_id', 'created_at']);
+            $this->insertRows($db, 'daily_checkins', (array) ($data['dailyCheckins'] ?? []), ['id', 'user_id', 'local_date', 'wake_time', 'had_breakfast', 'morning_energy', 'daily_focus_task_id', 'morning_completed_at', 'morning_skipped_at', 'evening_energy', 'reflection', 'closed_at', 'created_at', 'updated_at'], $userId);
 
             $settings = is_array($data['settings'] ?? null) ? $data['settings'] : [];
             $settings['user_id'] = $userId;

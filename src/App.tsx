@@ -13,11 +13,13 @@ import {
   ChevronRight,
   Circle,
   Clock3,
+  Coffee,
   Dumbbell,
   Download,
   Eye,
   EyeOff,
   FolderKanban,
+  Flag,
   Inbox,
   LayoutDashboard,
   LockKeyhole,
@@ -37,6 +39,8 @@ import {
   Sparkles,
   Square,
   Sun,
+  Sunrise,
+  Sunset,
   Target,
   TimerReset,
   Trash2,
@@ -47,7 +51,7 @@ import {
 } from 'lucide-react'
 import { api } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
-import type { AiPlan, BackupPreview, BackupRecord, BootstrapData, Category, Habit, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BackupPreview, BackupRecord, BootstrapData, Category, DailyRhythm, EveningDecision, Habit, MorningCheckinInput, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
   { key: 'now' as const, label: '现在', icon: Play },
@@ -97,6 +101,24 @@ const defaultReview: ReviewSummary = {
   completionRate: 0,
   completedMinutes: 0,
   overdue: 0,
+}
+
+function emptyDailyRhythm(): DailyRhythm {
+  return {
+    date: berlinIsoDate(),
+    morningStatus: 'pending',
+    wakeTime: null,
+    hadBreakfast: null,
+    morningEnergy: null,
+    focusTaskId: null,
+    focusTaskTitle: null,
+    morningCompletedAt: null,
+    eveningEnergy: null,
+    reflection: '',
+    closedAt: null,
+    morningStreak: 0,
+    eveningStreak: 0,
+  }
 }
 
 const palette = ['#496d5b', '#b96552', '#58748f', '#a1843e', '#7a6b87']
@@ -443,6 +465,11 @@ function berlinClockMinutes(date = new Date()) {
   return hour * 60 + minute
 }
 
+function berlinClockTime(date = new Date()) {
+  const minutes = berlinClockMinutes(date)
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+}
+
 function taskStartMinutes(task: Task) {
   return timeToMinutes(taskCalendarTime(task))
 }
@@ -463,10 +490,10 @@ function taskPriorityWeight(task: Task) {
 type NowRecommendation = {
   task: Task
   reason: string
-  state: 'running' | 'paused' | 'started' | 'current' | 'overdue' | 'next' | 'due'
+  state: 'running' | 'paused' | 'started' | 'current' | 'focus' | 'overdue' | 'next' | 'due'
 }
 
-function recommendNowTask(tasks: Task[], now = new Date()): NowRecommendation | null {
+function recommendNowTask(tasks: Task[], now = new Date(), focusTaskId: number | null = null): NowRecommendation | null {
   const today = berlinIsoDate()
   const minutes = berlinClockMinutes(now)
   const openTasks = tasks.filter(isOpenTask)
@@ -489,6 +516,13 @@ function recommendNowTask(tasks: Task[], now = new Date()): NowRecommendation | 
     return start !== null && start <= minutes && taskEndMinutes(task) >= minutes
   })
   if (current) return { task: current, reason: '现在正是安排它的时间。', state: 'current' }
+
+  const dailyFocus = focusTaskId === null ? null : openTasks.find((task) => task.id === focusTaskId)
+  const dailyFocusStart = dailyFocus ? taskStartMinutes(dailyFocus) : null
+  const dailyFocusDate = dailyFocus ? taskCalendarDate(dailyFocus) : null
+  if (dailyFocus && (dailyFocus.unscheduled || (dailyFocusDate !== null && dailyFocusDate <= today)) && (dailyFocusStart === null || dailyFocusStart <= minutes)) {
+    return { task: dailyFocus, reason: '这是你今天亲自选出的唯一重点。', state: 'focus' }
+  }
 
   const overdue = scheduledToday
     .filter((task) => (taskStartMinutes(task) ?? 24 * 60) < minutes)
@@ -1241,8 +1275,9 @@ function TaskCheck({ task, onToggle }: { task: Task; onToggle: (id: number) => v
   )
 }
 
-function NowPage({ tasks, idlePermission, onStart, onPause, onComplete, onDelay, onSkip, onOpenTask, onNavigate }: {
+function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onComplete, onDelay, onSkip, onOpenTask, onNavigate }: {
   tasks: Task[]
+  dailyRhythm: DailyRhythm
   idlePermission: IdlePermissionState
   onStart: (task: Task) => Promise<void>
   onPause: (task: Task) => Promise<void>
@@ -1254,7 +1289,7 @@ function NowPage({ tasks, idlePermission, onStart, onPause, onComplete, onDelay,
 }) {
   const [clock, setClock] = useState(Date.now())
   const [busy, setBusy] = useState<string | null>(null)
-  const recommendation = recommendNowTask(tasks, new Date(clock))
+  const recommendation = recommendNowTask(tasks, new Date(clock), dailyRhythm.focusTaskId)
   const task = recommendation?.task ?? null
   const nextFixed = nextFixedTask(tasks, task?.id ?? null, new Date(clock))
   const todayQueue = tasks
@@ -1315,7 +1350,7 @@ function NowPage({ tasks, idlePermission, onStart, onPause, onComplete, onDelay,
       <div className="now-layout">
         <main className="now-stage" aria-live="polite">
           <div className="now-state-line">
-            <span className={`now-state now-state-${recommendation.state}`}>{recommendation.state === 'running' ? '正在专注' : recommendation.state === 'paused' ? '已暂停' : recommendation.state === 'started' ? '正在进行' : recommendation.state === 'overdue' ? '已经到点' : recommendation.state === 'current' ? '就是现在' : '接下来'}</span>
+            <span className={`now-state now-state-${recommendation.state}`}>{recommendation.state === 'running' ? '正在专注' : recommendation.state === 'paused' ? '已暂停' : recommendation.state === 'started' ? '正在进行' : recommendation.state === 'focus' ? '今日重点' : recommendation.state === 'overdue' ? '已经到点' : recommendation.state === 'current' ? '就是现在' : '接下来'}</span>
             <span>{recommendation.reason}</span>
           </div>
           <div className="now-task-heading">
@@ -1383,10 +1418,166 @@ function NowPage({ tasks, idlePermission, onStart, onPause, onComplete, onDelay,
   )
 }
 
-function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask, toggleTask, toggleHabit, onOpenTask, onScheduleTask, onNavigate, onAiPlan }: {
+function EnergyScale({ value, onChange, label }: { value: number; onChange: (value: number) => void; label: string }) {
+  const labels = ['', '很低', '偏低', '一般', '不错', '很好']
+
+  return (
+    <fieldset className="energy-field">
+      <legend>{label}</legend>
+      <div className="energy-scale">
+        {[1, 2, 3, 4, 5].map((level) => (
+          <button type="button" className={value === level ? 'active' : ''} aria-pressed={value === level} onClick={() => onChange(level)} key={level}>
+            <strong>{level}</strong><span>{labels[level]}</span>
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  )
+}
+
+function MorningCheckinModal({ rhythm, tasks, onClose, onSave, onSkip }: {
+  rhythm: DailyRhythm
+  tasks: Task[]
+  onClose: () => void
+  onSave: (input: MorningCheckinInput, organize: boolean) => Promise<void>
+  onSkip: () => Promise<void>
+}) {
+  const taskOptions = tasks
+    .filter((task) => isOpenTask(task) && (task.unscheduled || (taskCalendarDate(task) ?? '9999-12-31') <= berlinIsoDate()))
+    .sort((left, right) => {
+      const leftToday = taskCalendarDate(left) === berlinIsoDate() ? 0 : 1
+      const rightToday = taskCalendarDate(right) === berlinIsoDate() ? 0 : 1
+      return leftToday - rightToday || taskPriorityWeight(left) - taskPriorityWeight(right) || (taskStartMinutes(left) ?? 24 * 60) - (taskStartMinutes(right) ?? 24 * 60)
+    })
+    .slice(0, 40)
+  const suggestedTaskId = rhythm.focusTaskId ?? recommendNowTask(tasks)?.task.id ?? taskOptions[0]?.id ?? null
+  const [wakeTime, setWakeTime] = useState(rhythm.wakeTime ?? berlinClockTime())
+  const [hadBreakfast, setHadBreakfast] = useState(rhythm.hadBreakfast ?? false)
+  const [energy, setEnergy] = useState(rhythm.morningEnergy ?? 3)
+  const [focusTaskId, setFocusTaskId] = useState(suggestedTaskId === null ? '' : String(suggestedTaskId))
+  const [busy, setBusy] = useState<'save' | 'organize' | 'skip' | null>(null)
+  const [error, setError] = useState('')
+
+  async function save(organize: boolean) {
+    setBusy(organize ? 'organize' : 'save')
+    setError('')
+    try {
+      await onSave({ wakeTime, hadBreakfast, energy, focusTaskId: focusTaskId ? Number(focusTaskId) : null }, organize)
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '晨间启动保存失败。')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function skip() {
+    setBusy('skip')
+    setError('')
+    try {
+      await onSkip()
+    } catch (skipError) {
+      setError(skipError instanceof Error ? skipError.message : '暂时无法跳过晨间启动。')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <ModalShell title="开始今天" eyebrow="MORNING" onClose={onClose}>
+      <div className="daily-flow-body">
+        <div className="daily-flow-intro"><span><Sunrise size={22} /></span><div><strong>不用规划完美的一天</strong><p>只记录此刻状态，再选出今天唯一重要的一件事。</p></div></div>
+        <div className="morning-basics">
+          <label><span>今天几点起床？</span><input type="time" value={wakeTime} onChange={(event) => setWakeTime(event.target.value)} /></label>
+          <fieldset><legend>吃早饭了吗？</legend><div className="binary-choice"><button type="button" className={hadBreakfast ? 'active' : ''} onClick={() => setHadBreakfast(true)}><Coffee size={15} />吃了</button><button type="button" className={!hadBreakfast ? 'active' : ''} onClick={() => setHadBreakfast(false)}>还没有</button></div></fieldset>
+        </div>
+        <EnergyScale value={energy} onChange={setEnergy} label="现在的精力怎么样？" />
+        <label className="daily-focus-select"><span><Flag size={15} />今天唯一必须完成</span><select value={focusTaskId} onChange={(event) => setFocusTaskId(event.target.value)}><option value="">暂时不选</option>{taskOptions.map((task) => <option value={task.id} key={task.id}>{taskCalendarDate(task) === berlinIsoDate() && task.start ? `${task.start} · ` : ''}{task.title}</option>)}</select></label>
+        <div className="daily-streak-note"><Sun size={15} /><span>晨间启动已连续完成 <strong>{rhythm.morningStreak}</strong> 天。跳过不会产生惩罚。</span></div>
+        {error && <p className="form-error">{error}</p>}
+      </div>
+      <footer className="modal-actions daily-flow-actions">
+        <button type="button" className="text-button" disabled={busy !== null} onClick={() => void skip()}>{busy === 'skip' ? '处理中…' : '今天先跳过'}</button>
+        <button type="button" className="outline-button" disabled={busy !== null || !wakeTime} onClick={() => void save(true)}><Sparkles size={16} />{busy === 'organize' ? '保存中…' : '保存并整理今天'}</button>
+        <button type="button" className="primary-button" disabled={busy !== null || !wakeTime} onClick={() => void save(false)}>{busy === 'save' ? '保存中…' : '开始今天'}</button>
+      </footer>
+    </ModalShell>
+  )
+}
+
+function EveningCheckinModal({ rhythm, tasks, onClose, onSave }: {
+  rhythm: DailyRhythm
+  tasks: Task[]
+  onClose: () => void
+  onSave: (energy: number, reflection: string, decisions: EveningDecision[]) => Promise<void>
+}) {
+  const today = berlinIsoDate()
+  const relevantTasks = tasks.filter((task) => !task.skipped && task.status !== 'cancelled' && (
+    taskCalendarDate(task) === today
+    || task.completedAt?.slice(0, 10) === today
+    || task.status === 'in_progress'
+    || task.dueAt?.slice(0, 10) === today
+  ))
+  const unfinished = relevantTasks.filter((task) => !task.completed)
+  const completed = relevantTasks.filter((task) => task.completed).length
+  const focusSeconds = relevantTasks.reduce((sum, task) => {
+    const session = task.focusSession
+    if (!session) return sum
+    const runningSeconds = session.status === 'running' && session.lastResumedAt
+      ? Math.max(0, Math.floor((Date.now() - Date.parse(session.lastResumedAt)) / 1000))
+      : 0
+    return sum + session.elapsedSeconds + runningSeconds
+  }, 0)
+  const [energy, setEnergy] = useState(rhythm.eveningEnergy ?? 3)
+  const [reflection, setReflection] = useState(rhythm.reflection)
+  const [decisions, setDecisions] = useState<Record<number, EveningDecision['action']>>(() => Object.fromEntries(unfinished.map((task) => [task.id, task.recurrenceRule ? 'drop' : 'tomorrow'])))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function submit() {
+    setBusy(true)
+    setError('')
+    try {
+      await onSave(energy, reflection, unfinished.map((task) => ({ taskId: task.id, action: decisions[task.id] ?? 'later' })))
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '今晚收尾保存失败。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <ModalShell title="结束今天" eyebrow="EVENING" onClose={onClose}>
+      <div className="daily-flow-body evening-flow-body">
+        <div className="daily-flow-intro"><span><Sunset size={22} /></span><div><strong>今天到这里就够了</strong><p>把没做完的事情放到合适的位置，然后安心结束今天。</p></div></div>
+        <div className="evening-summary">
+          <div><strong>{completed}</strong><span>完成任务</span></div><div><strong>{formatFocusTime(focusSeconds).slice(0, 5)}</strong><span>真实专注</span></div><div><strong>{unfinished.length}</strong><span>需要决定</span></div>
+        </div>
+        {unfinished.length > 0 && <section className="unfinished-decisions"><div className="task-detail-heading"><h3>未完成任务</h3><span>逐项选择去向</span></div>{unfinished.map((task) => (
+          <article key={task.id}>
+            <div><span style={{ backgroundColor: task.color }} /><div><strong>{task.title}</strong><small>{task.start ?? '待安排'} · {task.duration} 分钟{task.recurrenceRule ? ' · 循环' : ''}</small></div></div>
+            <div className="decision-control">
+              <button type="button" className={decisions[task.id] === 'tomorrow' ? 'active' : ''} onClick={() => setDecisions((current) => ({ ...current, [task.id]: 'tomorrow' }))}>明天</button>
+              <button type="button" className={decisions[task.id] === 'later' ? 'active' : ''} onClick={() => setDecisions((current) => ({ ...current, [task.id]: 'later' }))}>以后</button>
+              <button type="button" className={decisions[task.id] === 'drop' ? 'active' : ''} onClick={() => setDecisions((current) => ({ ...current, [task.id]: 'drop' }))}>{task.recurrenceRule ? '跳过' : '放弃'}</button>
+            </div>
+          </article>
+        ))}</section>}
+        {unfinished.length === 0 && <div className="evening-clear"><CheckCircle2 size={20} /><div><strong>今天没有遗留任务</strong><span>现在可以直接收尾。</span></div></div>}
+        <EnergyScale value={energy} onChange={setEnergy} label="今晚还剩多少精力？" />
+        <label className="reflection-field"><span>给今天留一句话（可选）</span><textarea maxLength={2000} value={reflection} onChange={(event) => setReflection(event.target.value)} placeholder="今天什么做得不错，或者明天想记住什么？" /></label>
+        <div className="daily-streak-note"><Moon size={15} /><span>晚间收尾已连续完成 <strong>{rhythm.eveningStreak}</strong> 天。结束后停止今天剩余的普通邮件提醒。</span></div>
+        {error && <p className="form-error">{error}</p>}
+      </div>
+      <footer className="modal-actions daily-flow-actions"><button type="button" className="outline-button" onClick={onClose} disabled={busy}>稍后再说</button><button type="button" className="primary-button" onClick={() => void submit()} disabled={busy}>{busy ? '收尾中…' : '确认并结束今天'}</button></footer>
+    </ModalShell>
+  )
+}
+
+function TodayPage({ tasks, habits, projects, dailyRhythm, quickEntry, setQuickEntry, addTask, toggleTask, toggleHabit, onOpenTask, onScheduleTask, onNavigate, onAiPlan, onOpenDailyFlow }: {
   tasks: Task[]
   habits: Habit[]
   projects: Project[]
+  dailyRhythm: DailyRhythm
   quickEntry: string
   setQuickEntry: (value: string) => void
   addTask: () => void
@@ -1396,6 +1587,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
   onScheduleTask: (id: number) => void
   onNavigate: (page: PageKey) => void
   onAiPlan: () => void
+  onOpenDailyFlow: () => void
 }) {
   const scheduled = tasks
     .filter((task) => !task.unscheduled && taskCalendarDate(task) === berlinIsoDate())
@@ -1423,6 +1615,7 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
           <p>{berlinDate()}，已经完成 {completed} 件事。</p>
         </div>
         <div className="today-heading-actions">
+          <button type="button" className="outline-button daily-flow-trigger" onClick={onOpenDailyFlow} disabled={Boolean(dailyRhythm.closedAt)}>{dailyRhythm.closedAt ? <CheckCircle2 size={17} /> : dailyRhythm.morningStatus === 'pending' ? <Sunrise size={17} /> : <Sunset size={17} />}{dailyRhythm.closedAt ? '今日已收尾' : dailyRhythm.morningStatus === 'pending' ? '开始今天' : '结束今天'}</button>
           <button type="button" className="outline-button ai-plan-trigger" onClick={onAiPlan}><Sparkles size={17} /> 整理今天</button>
           <div className="today-progress">
             <strong>{progress}%</strong>
@@ -1433,6 +1626,12 @@ function TodayPage({ tasks, habits, projects, quickEntry, setQuickEntry, addTask
       </section>
 
       <CaptureBar value={quickEntry} onChange={setQuickEntry} onAdd={addTask} />
+
+      {dailyRhythm.focusTaskId && dailyRhythm.focusTaskTitle && !dailyRhythm.closedAt && (
+        <button type="button" className="daily-focus-banner" onClick={() => onOpenTask(dailyRhythm.focusTaskId as number)}>
+          <span><Flag size={17} /></span><div><small>今日唯一重点</small><strong>{dailyRhythm.focusTaskTitle}</strong></div><ChevronRight size={16} />
+        </button>
+      )}
 
       <div className="today-layout">
         <div className="today-main">
@@ -2250,6 +2449,8 @@ export default function App() {
   const [backups, setBackups] = useState<BackupRecord[]>([])
   const [settings, setSettings] = useState(defaultSettings)
   const [review, setReview] = useState(defaultReview)
+  const [dailyRhythm, setDailyRhythm] = useState<DailyRhythm>(() => emptyDailyRhythm())
+  const [dailyFlow, setDailyFlow] = useState<'morning' | 'evening' | null>(null)
   const [editor, setEditor] = useState<EditorState>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [quickEntry, setQuickEntry] = useState('')
@@ -2267,6 +2468,7 @@ export default function App() {
   const idlePauseInFlight = useRef(false)
   const idleNotification = useRef<Notification | null>(null)
   const baseDocumentTitle = useRef(document.title)
+  const dailyPrompted = useRef('')
 
   const inboxCount = useMemo(() => tasks.filter((task) => !task.completed && task.unscheduled).length, [tasks])
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId), [selectedTaskId, tasks])
@@ -2286,6 +2488,33 @@ export default function App() {
     window.addEventListener('popstate', syncRoute)
     return () => window.removeEventListener('popstate', syncRoute)
   }, [])
+
+  useEffect(() => {
+    if (loggedIn !== true) return
+    const interval = window.setInterval(() => {
+      if (dailyRhythm.date === berlinIsoDate()) return
+      dailyPrompted.current = ''
+      if (demoMode) {
+        setDailyRhythm(emptyDailyRhythm())
+        return
+      }
+      void api.bootstrap().then(applyBootstrap).catch(() => undefined)
+    }, 60_000)
+    return () => window.clearInterval(interval)
+  }, [dailyRhythm.date, demoMode, loggedIn])
+
+  useEffect(() => {
+    if (loggedIn !== true || dailyFlow !== null || dailyRhythm.date !== berlinIsoDate()) return
+    const minutes = berlinClockMinutes()
+    const prompt = dailyRhythm.morningStatus === 'pending' && minutes < 12 * 60
+      ? 'morning'
+      : !dailyRhythm.closedAt && minutes >= 22 * 60 + 30
+        ? 'evening'
+        : null
+    if (prompt === null || dailyPrompted.current === `${dailyRhythm.date}-${prompt}`) return
+    dailyPrompted.current = `${dailyRhythm.date}-${prompt}`
+    setDailyFlow(prompt)
+  }, [dailyFlow, dailyRhythm, loggedIn])
 
   useEffect(() => {
     let active = true
@@ -2322,6 +2551,7 @@ export default function App() {
     setCategories(data.categories)
     setPlanImports(data.planImports ?? [])
     setBackups(data.backups ?? [])
+    setDailyRhythm(data.dailyRhythm ?? emptyDailyRhythm())
     setSettings(data.settings)
     setReview(data.review)
   }
@@ -2924,6 +3154,80 @@ export default function App() {
     showToast(`循环任务已暂停至 ${pausedUntil}`)
   }
 
+  function openDailyFlow() {
+    if (dailyRhythm.closedAt) {
+      showToast('今天已经收尾，可以安心休息了')
+      return
+    }
+    setDailyFlow(dailyRhythm.morningStatus === 'pending' ? 'morning' : 'evening')
+  }
+
+  async function saveMorningCheckin(input: MorningCheckinInput, organize: boolean) {
+    if (demoMode) {
+      const focusTask = tasks.find((task) => task.id === input.focusTaskId)
+      setDailyRhythm((current) => ({
+        ...current,
+        wakeTime: input.wakeTime,
+        hadBreakfast: input.hadBreakfast,
+        morningEnergy: input.energy,
+        focusTaskId: input.focusTaskId,
+        focusTaskTitle: focusTask?.title ?? null,
+        morningStatus: 'completed',
+        morningCompletedAt: new Date().toISOString(),
+        morningStreak: Math.max(1, current.morningStreak + (current.morningCompletedAt ? 0 : 1)),
+      }))
+    } else {
+      applyBootstrap(await api.saveMorning(input))
+    }
+    setDailyFlow(null)
+    showToast('晨间启动已记录')
+    if (organize) openAiPlanner()
+  }
+
+  async function skipMorningCheckin() {
+    if (demoMode) {
+      setDailyRhythm((current) => ({ ...current, morningStatus: 'skipped' }))
+    } else {
+      applyBootstrap(await api.skipMorning())
+    }
+    setDailyFlow(null)
+    showToast('今天已跳过晨间启动')
+  }
+
+  async function closeDailyRhythm(energy: number, reflection: string, decisions: EveningDecision[]) {
+    if (demoMode) {
+      const decisionMap = new Map(decisions.map((decision) => [decision.taskId, decision.action]))
+      const tomorrow = shiftIsoDate(berlinIsoDate(), 1)
+      setTasks((current) => current.map((task) => {
+        const action = decisionMap.get(task.id)
+        if (!action) return task
+        if (action === 'drop') return { ...task, status: 'cancelled', skipped: true, focusSession: task.focusSession ? { ...task.focusSession, status: 'completed', endedAt: new Date().toISOString(), lastResumedAt: null } : null }
+        if (action === 'later') return { ...task, status: 'inbox', startAt: null, endAt: null, start: undefined, end: undefined, unscheduled: true, scheduleMode: 'flexible' }
+        const start = taskStartMinutes(task) ?? 9 * 60
+        return {
+          ...task,
+          status: 'planned',
+          startAt: localDateTime(tomorrow, start),
+          endAt: localDateTime(tomorrow, start + task.duration),
+          start: `${String(Math.floor(start / 60)).padStart(2, '0')}:${String(start % 60).padStart(2, '0')}`,
+          end: `${String(Math.floor((start + task.duration) / 60) % 24).padStart(2, '0')}:${String((start + task.duration) % 60).padStart(2, '0')}`,
+          unscheduled: false,
+        }
+      }))
+      setDailyRhythm((current) => ({
+        ...current,
+        eveningEnergy: energy,
+        reflection,
+        closedAt: new Date().toISOString(),
+        eveningStreak: Math.max(1, current.eveningStreak + (current.closedAt ? 0 : 1)),
+      }))
+    } else {
+      applyBootstrap(await api.closeDay(energy, reflection, decisions))
+    }
+    setDailyFlow(null)
+    showToast('今天已经收好，剩下的时间留给休息')
+  }
+
   async function saveTask(draft: TaskDraft) {
     if (!demoMode) {
       if (draft.id) {
@@ -3090,8 +3394,8 @@ export default function App() {
       </div>
       <div className="app-main">
         <Topbar page={page} tasks={tasks} onMenu={() => setMenuOpen(true)} onOpenTask={openTask} onOpenReminderSettings={() => navigateSettings('reminders')} />
-        {page === 'now' && <NowPage tasks={tasks} idlePermission={idlePermission} onStart={startNowTask} onPause={pauseNowTask} onComplete={completeNowTask} onDelay={delayNowTask} onSkip={skipNowTask} onOpenTask={openTask} onNavigate={navigate} />}
-        {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} onNavigate={navigate} onAiPlan={openAiPlanner} />}
+        {page === 'now' && <NowPage tasks={tasks} dailyRhythm={dailyRhythm} idlePermission={idlePermission} onStart={startNowTask} onPause={pauseNowTask} onComplete={completeNowTask} onDelay={delayNowTask} onSkip={skipNowTask} onOpenTask={openTask} onNavigate={navigate} />}
+        {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} dailyRhythm={dailyRhythm} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} onNavigate={navigate} onAiPlan={openAiPlanner} onOpenDailyFlow={openDailyFlow} />}
         {page === 'inbox' && <InboxPage tasks={tasks} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} onNewTask={() => setEditor({ type: 'task' })} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} />}
         {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor({ type: 'task', schedule: true })} onOpenTask={openTask} />}
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
@@ -3104,6 +3408,8 @@ export default function App() {
       {editor?.type === 'task' && <TaskEditor task={editorTask} schedule={editor.schedule} projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}
       {editor?.type === 'project' && <ProjectEditor onClose={() => setEditor(null)} onSave={saveProject} />}
       {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}
+      {dailyFlow === 'morning' && <MorningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={saveMorningCheckin} onSkip={skipMorningCheckin} />}
+      {dailyFlow === 'evening' && <EveningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={closeDailyRhythm} />}
       {aiPlannerOpen && <AiPlannerModal plan={aiPlan} loading={aiPlanLoading} applying={aiPlanApplying} error={aiPlanError} onClose={() => setAiPlannerOpen(false)} onRetry={() => void generateAiPlan()} onApply={() => void applyAiPlan()} />}
       {toast && <div className="toast"><CheckCircle2 size={17} />{toast}</div>}
       {idleWarning && <FocusIdleWarningDialog warning={idleWarning} secondsLeft={idleSecondsLeft} onContinue={dismissIdleWarning} onPause={() => void pauseForIdle(idleWarning)} />}
