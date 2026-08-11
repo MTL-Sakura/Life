@@ -200,7 +200,10 @@ switch ($action) {
         }
 
         $updateScope = ($input['updateScope'] ?? 'single') === 'future' ? 'future' : 'single';
-        $isRecurringEdit = !array_key_exists('completed', $input) && nullableString($current['recurrence_rule'] ?? null) !== null;
+        $recurringEditFields = ['title', 'notes', 'projectId', 'categoryId', 'duration', 'isFocus', 'recurrenceRule', 'scheduleMode', 'windowStart', 'windowEnd', 'reminderMinutes', 'priority', 'startAt', 'endAt', 'dueAt', 'subtasks'];
+        $isRecurringEdit = !array_key_exists('completed', $input)
+            && nullableString($current['recurrence_rule'] ?? null) !== null
+            && array_intersect($recurringEditFields, array_keys($input)) !== [];
         $shouldGenerateNext = array_key_exists('completed', $input)
             && (bool) $input['completed']
             && $current['status'] !== 'completed'

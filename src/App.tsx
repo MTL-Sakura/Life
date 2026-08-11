@@ -50,6 +50,7 @@ import { initialHabits, initialTasks, projects as initialProjects, weekDays } fr
 import type { AiPlan, BackupPreview, BackupRecord, BootstrapData, Category, Habit, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
+  { key: 'now' as const, label: '现在', icon: Play },
   { key: 'today' as const, label: '今日', icon: LayoutDashboard },
   { key: 'inbox' as const, label: '收集箱', icon: Inbox },
   { key: 'calendar' as const, label: '日历', icon: CalendarDays },
@@ -59,6 +60,7 @@ const navigation = [
 ]
 
 const pageNames: Record<PageKey, string> = {
+  now: '现在',
   today: '今日',
   inbox: '收集箱',
   calendar: '日历',
@@ -155,7 +157,7 @@ const settingsSections: Array<{ key: SettingsSectionKey; label: string; icon: ty
 function routeFromLocation(): { page: PageKey; settingsSection: SettingsSectionKey } {
   const parts = window.location.pathname.split('/').filter(Boolean)
   const page = parts[0]
-  const validPages: PageKey[] = ['today', 'inbox', 'calendar', 'projects', 'habits', 'review', 'settings']
+  const validPages: PageKey[] = ['now', 'today', 'inbox', 'calendar', 'projects', 'habits', 'review', 'settings']
   const settingsSection = settingsSections.some(({ key }) => key === parts[1])
     ? parts[1] as SettingsSectionKey
     : 'account'
@@ -421,6 +423,101 @@ function taskScheduleLabel(task: Task) {
   if (task.startAt) return taskMoment(task.startAt)
   if (task.start) return `今天 ${task.start}`
   return '待安排'
+}
+
+function timeToMinutes(value?: string | null) {
+  if (!value) return null
+  const match = value.match(/^(\d{2}):(\d{2})/)
+  return match ? Number(match[1]) * 60 + Number(match[2]) : null
+}
+
+function berlinClockMinutes(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Berlin',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? 0)
+  const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? 0)
+  return hour * 60 + minute
+}
+
+function taskStartMinutes(task: Task) {
+  return timeToMinutes(taskCalendarTime(task))
+}
+
+function taskEndMinutes(task: Task) {
+  return timeToMinutes(task.endAt?.slice(11, 16) ?? task.end)
+    ?? ((taskStartMinutes(task) ?? 0) + task.duration)
+}
+
+function isOpenTask(task: Task) {
+  return !task.completed && !task.skipped && task.status !== 'cancelled'
+}
+
+function taskPriorityWeight(task: Task) {
+  return task.priority === 'high' ? 0 : task.priority === 'medium' ? 1 : 2
+}
+
+type NowRecommendation = {
+  task: Task
+  reason: string
+  state: 'running' | 'paused' | 'started' | 'current' | 'overdue' | 'next' | 'due'
+}
+
+function recommendNowTask(tasks: Task[], now = new Date()): NowRecommendation | null {
+  const today = berlinIsoDate()
+  const minutes = berlinClockMinutes(now)
+  const openTasks = tasks.filter(isOpenTask)
+  const running = openTasks.find((task) => task.focusSession?.status === 'running')
+  if (running) return { task: running, reason: '专注已经开始，先留在这一件事里。', state: 'running' }
+  const paused = openTasks.find((task) => task.focusSession?.status === 'paused')
+  if (paused) return { task: paused, reason: '这次专注正在暂停，准备好后从这里继续。', state: 'paused' }
+  const started = openTasks.find((task) => task.status === 'in_progress')
+  if (started) return { task: started, reason: '你已经开始了，先把它收尾。', state: 'started' }
+
+  const scheduledToday = openTasks
+    .filter((task) => taskCalendarDate(task) === today)
+    .sort((left, right) => {
+      const leftStart = taskStartMinutes(left) ?? 24 * 60
+      const rightStart = taskStartMinutes(right) ?? 24 * 60
+      return leftStart - rightStart || taskPriorityWeight(left) - taskPriorityWeight(right)
+    })
+  const current = scheduledToday.find((task) => {
+    const start = taskStartMinutes(task)
+    return start !== null && start <= minutes && taskEndMinutes(task) >= minutes
+  })
+  if (current) return { task: current, reason: '现在正是安排它的时间。', state: 'current' }
+
+  const overdue = scheduledToday
+    .filter((task) => (taskStartMinutes(task) ?? 24 * 60) < minutes)
+    .sort((left, right) => taskPriorityWeight(left) - taskPriorityWeight(right) || (taskStartMinutes(left) ?? 0) - (taskStartMinutes(right) ?? 0))[0]
+  if (overdue) return { task: overdue, reason: '它已经到时间了，先清掉这件。', state: 'overdue' }
+
+  const next = scheduledToday.find((task) => (taskStartMinutes(task) ?? -1) >= minutes)
+  if (next) return { task: next, reason: '这是今天最近的一项安排。', state: 'next' }
+
+  const due = openTasks
+    .filter((task) => task.dueAt && task.dueAt.slice(0, 10) <= today)
+    .sort((left, right) => taskPriorityWeight(left) - taskPriorityWeight(right) || (left.dueAt ?? '').localeCompare(right.dueAt ?? ''))[0]
+  return due ? { task: due, reason: '它今天到期，值得先处理。', state: 'due' } : null
+}
+
+function nextFixedTask(tasks: Task[], currentTaskId: number | null, now = new Date()) {
+  const today = berlinIsoDate()
+  const minutes = berlinClockMinutes(now)
+  return tasks
+    .filter((task) => isOpenTask(task)
+      && task.id !== currentTaskId
+      && task.scheduleMode === 'fixed'
+      && taskCalendarDate(task) === today
+      && (taskStartMinutes(task) ?? -1) > minutes)
+    .sort((left, right) => (taskStartMinutes(left) ?? 24 * 60) - (taskStartMinutes(right) ?? 24 * 60))[0] ?? null
+}
+
+function minutesUntilTask(task: Task, now = new Date()) {
+  return Math.max(0, (taskStartMinutes(task) ?? berlinClockMinutes(now)) - berlinClockMinutes(now))
 }
 
 function ProgressBar({ value, color = '#496d5b' }: { value: number; color?: string }) {
@@ -1141,6 +1238,148 @@ function TaskCheck({ task, onToggle }: { task: Task; onToggle: (id: number) => v
     >
       {task.completed && <Check size={14} strokeWidth={3} />}
     </button>
+  )
+}
+
+function NowPage({ tasks, idlePermission, onStart, onPause, onComplete, onDelay, onSkip, onOpenTask, onNavigate }: {
+  tasks: Task[]
+  idlePermission: IdlePermissionState
+  onStart: (task: Task) => Promise<void>
+  onPause: (task: Task) => Promise<void>
+  onComplete: (task: Task) => Promise<void>
+  onDelay: (task: Task, minutes: number) => Promise<void>
+  onSkip: (task: Task) => Promise<void>
+  onOpenTask: (id: number) => void
+  onNavigate: (page: PageKey) => void
+}) {
+  const [clock, setClock] = useState(Date.now())
+  const [busy, setBusy] = useState<string | null>(null)
+  const recommendation = recommendNowTask(tasks, new Date(clock))
+  const task = recommendation?.task ?? null
+  const nextFixed = nextFixedTask(tasks, task?.id ?? null, new Date(clock))
+  const todayQueue = tasks
+    .filter((item) => isOpenTask(item) && item.id !== task?.id && taskCalendarDate(item) === berlinIsoDate())
+    .sort((left, right) => (taskStartMinutes(left) ?? 24 * 60) - (taskStartMinutes(right) ?? 24 * 60))
+    .slice(0, 4)
+  const session = task?.focusSession
+  const runningSeconds = session?.status === 'running' && session.lastResumedAt
+    ? Math.max(0, Math.floor((clock - new Date(session.lastResumedAt).getTime()) / 1000))
+    : 0
+  const elapsedSeconds = (session?.elapsedSeconds ?? 0) + runningSeconds
+  const plannedSeconds = Math.max(60, session?.plannedSeconds ?? (task?.duration ?? 1) * 60)
+  const focusProgress = Math.min(100, Math.round((elapsedSeconds / plannedSeconds) * 100))
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setClock(Date.now()), task?.focusSession?.status === 'running' ? 1000 : 30_000)
+    return () => window.clearInterval(interval)
+  }, [task?.focusSession?.status])
+
+  async function act(key: string, action: () => Promise<void>) {
+    setBusy(key)
+    try {
+      await action()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  if (!task || !recommendation) {
+    return (
+      <div className="page-content now-page">
+        <section className="page-heading">
+          <div><p className="eyebrow">NOW</p><h1>现在该做什么</h1><p>{berlinDate()}，只看眼前这一小步。</p></div>
+        </section>
+        <section className="now-empty">
+          <span><CheckCircle2 size={28} /></span>
+          <h2>现在没有必须处理的事</h2>
+          <p>今天的安排已经完成，或者还没有给任务安排时间。可以放心休息，也可以整理一下今天。</p>
+          <div><button type="button" className="primary-button" onClick={() => onNavigate('today')}>查看今日</button><button type="button" className="outline-button" onClick={() => onNavigate('inbox')}>打开收集箱</button></div>
+        </section>
+      </div>
+    )
+  }
+
+  const startLabel = task.isFocus
+    ? session?.status === 'paused' ? '继续专注' : '开始专注'
+    : task.status === 'in_progress' ? '进行中' : '开始行动'
+  const scheduleLabel = task.start ? `${task.start}–${task.end ?? ''}` : task.dueAt ? `截止 ${taskMoment(task.dueAt)}` : '未设置具体时间'
+  const nextFixedMinutes = nextFixed ? minutesUntilTask(nextFixed, new Date(clock)) : null
+
+  return (
+    <div className="page-content now-page">
+      <section className="page-heading now-heading">
+        <div><p className="eyebrow">NOW</p><h1>现在该做什么</h1><p>{berlinDate()}，系统已经替你缩小到一件事。</p></div>
+        <button type="button" className="outline-button" onClick={() => onNavigate('today')}>查看整天 <ChevronRight size={15} /></button>
+      </section>
+
+      <div className="now-layout">
+        <main className="now-stage" aria-live="polite">
+          <div className="now-state-line">
+            <span className={`now-state now-state-${recommendation.state}`}>{recommendation.state === 'running' ? '正在专注' : recommendation.state === 'paused' ? '已暂停' : recommendation.state === 'started' ? '正在进行' : recommendation.state === 'overdue' ? '已经到点' : recommendation.state === 'current' ? '就是现在' : '接下来'}</span>
+            <span>{recommendation.reason}</span>
+          </div>
+          <div className="now-task-heading">
+            <span className="now-task-color" style={{ backgroundColor: task.color }} />
+            <div><p>{task.project} · {task.category}</p><h2>{task.title}</h2></div>
+            <button type="button" className="row-action" onClick={() => onOpenTask(task.id)} aria-label="查看任务详情" title="查看任务详情"><MoreHorizontal size={19} /></button>
+          </div>
+          <div className="now-task-meta">
+            <span><CalendarClock size={16} />{scheduleLabel}</span>
+            <span><Clock3 size={16} />预计 {task.duration} 分钟</span>
+            {task.isFocus && <span><TimerReset size={16} />专注任务</span>}
+            {task.scheduleMode === 'fixed' && <span><LockKeyhole size={16} />固定安排</span>}
+          </div>
+
+          {task.notes && <p className="now-task-note">{task.notes}</p>}
+
+          {task.isFocus && (
+            <section className="now-focus-progress" aria-label="当前专注进度">
+              <div><span>{session?.status === 'running' ? '专注中' : session?.status === 'paused' ? '专注已暂停' : '准备开始'}</span><strong>{focusProgress}%</strong></div>
+              <p><strong>{formatFocusTime(elapsedSeconds)}</strong><span>/ {formatFocusTime(plannedSeconds)}</span></p>
+              <ProgressBar value={focusProgress} color={focusProgress >= 100 ? '#a1843e' : '#496d5b'} />
+              <small><ShieldCheck size={13} />{idlePermission === 'granted' ? '离开检测已开启' : '开始专注时会尝试开启离开检测'}</small>
+            </section>
+          )}
+
+          <div className="now-primary-actions">
+            {task.isFocus && session?.status === 'running' ? (
+              <button type="button" className="outline-button" disabled={busy !== null} onClick={() => void act('pause', () => onPause(task))}><Pause size={17} />暂停</button>
+            ) : task.status !== 'in_progress' || task.isFocus ? (
+              <button type="button" className="primary-button" disabled={busy !== null} onClick={() => void act('start', () => onStart(task))}><Play size={17} />{startLabel}</button>
+            ) : null}
+            <button type="button" className="primary-button now-complete-button" disabled={busy !== null} onClick={() => void act('complete', () => onComplete(task))}><Check size={17} />完成，下一项</button>
+          </div>
+
+          <div className="now-secondary-actions">
+            <span>稍后再做</span>
+            {[15, 30, 60].map((minutes) => <button type="button" className="outline-button compact" disabled={busy !== null} onClick={() => void act(`delay-${minutes}`, () => onDelay(task, minutes))} key={minutes}>{minutes} 分钟</button>)}
+            <button type="button" className="text-button now-skip-button" disabled={busy !== null} onClick={() => void act('skip', () => onSkip(task))}>{task.recurrenceRule ? '跳过今天' : '移出今天'}</button>
+          </div>
+        </main>
+
+        <aside className="now-aside">
+          <section>
+            <div className="section-title-row"><h2>下一固定安排</h2></div>
+            {nextFixed ? (
+              <button type="button" className="now-fixed-task" onClick={() => onOpenTask(nextFixed.id)}>
+                <span>{nextFixed.start}</span><div><strong>{nextFixed.title}</strong><small>{nextFixedMinutes !== null && nextFixedMinutes >= 60 ? `${Math.floor(nextFixedMinutes / 60)} 小时 ${nextFixedMinutes % 60} 分钟后` : `${nextFixedMinutes} 分钟后`}</small></div><ChevronRight size={15} />
+              </button>
+            ) : <p className="empty-copy">今天没有后续固定安排。</p>}
+          </section>
+          <section>
+            <div className="section-title-row"><h2>今天后面还有</h2><span>{todayQueue.length} 项</span></div>
+            <div className="now-queue">
+              {todayQueue.map((item) => (
+                <button type="button" onClick={() => onOpenTask(item.id)} key={item.id}>
+                  <span>{item.start ?? '待定'}</span><div><strong>{item.title}</strong><small>{item.duration} 分钟{item.isFocus ? ' · 专注' : ''}</small></div>
+                </button>
+              ))}
+              {todayQueue.length === 0 && <p className="empty-copy">做完这一项，今天就清静了。</p>}
+            </div>
+          </section>
+        </aside>
+      </div>
+    </div>
   )
 }
 
@@ -2276,6 +2515,87 @@ export default function App() {
     }
   }
 
+  async function updateExecutionTask(task: Task, changes: Partial<Task> & { updateScope?: 'single' | 'future' }) {
+    if (!demoMode) {
+      try {
+        const result = await api.updateTask({ id: task.id, ...changes })
+        setTasks((current) => {
+          const updated = current.map((item) => item.id === task.id ? result.task : item)
+          return result.nextTask && !updated.some((item) => item.id === result.nextTask?.id)
+            ? [...updated, result.nextTask]
+            : updated
+        })
+        return true
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : '任务状态保存失败')
+        return false
+      }
+    }
+
+    setTasks((current) => current.map((item) => {
+      if (item.id !== task.id) return item
+      const startChanged = Object.prototype.hasOwnProperty.call(changes, 'startAt')
+      const endChanged = Object.prototype.hasOwnProperty.call(changes, 'endAt')
+      return {
+        ...item,
+        ...changes,
+        start: startChanged ? changes.startAt?.slice(11, 16) : item.start,
+        end: endChanged ? changes.endAt?.slice(11, 16) : item.end,
+        unscheduled: startChanged ? !changes.startAt : item.unscheduled,
+      }
+    }))
+    return true
+  }
+
+  async function startNowTask(task: Task) {
+    if (task.isFocus) {
+      const action: FocusAction = task.focusSession?.status === 'paused' ? 'resume' : 'start'
+      if (!await focusTask(task.id, action)) return
+    }
+    if (await updateExecutionTask(task, { status: 'in_progress' })) {
+      showToast(task.isFocus ? '专注开始，只做这一件' : '已经开始，做完再看下一项')
+    }
+  }
+
+  async function pauseNowTask(task: Task) {
+    if (!task.isFocus || task.focusSession?.status !== 'running') return
+    if (await focusTask(task.id, 'pause')) showToast('专注已暂停，时间会保留')
+  }
+
+  async function completeNowTask(task: Task) {
+    if (task.isFocus && (task.focusSession?.status === 'running' || task.focusSession?.status === 'paused')) {
+      if (!await focusTask(task.id, 'end')) return
+    }
+    await toggleTask(task.id)
+  }
+
+  async function delayNowTask(task: Task, delayMinutes: number) {
+    if (task.isFocus && (task.focusSession?.status === 'running' || task.focusSession?.status === 'paused')) {
+      if (!await focusTask(task.id, 'end')) return
+    }
+    const today = berlinIsoDate()
+    const scheduledDate = taskCalendarDate(task)
+    const nowMinutes = berlinClockMinutes()
+    const existingStart = scheduledDate === today ? taskStartMinutes(task) : null
+    const delayedStart = Math.max(nowMinutes, existingStart ?? nowMinutes) + delayMinutes
+    const startAt = localDateTime(today, delayedStart)
+    const endAt = localDateTime(today, delayedStart + task.duration)
+    const updated = await updateExecutionTask(task, { startAt, endAt, status: 'planned', updateScope: 'single' })
+    if (updated) showToast(`已延后 ${delayMinutes} 分钟，只调整这一次`)
+  }
+
+  async function skipNowTask(task: Task) {
+    if (task.isFocus && (task.focusSession?.status === 'running' || task.focusSession?.status === 'paused')) {
+      if (!await focusTask(task.id, 'end')) return
+    }
+    if (task.recurrenceRule) {
+      await skipRecurringTask(task.id)
+      return
+    }
+    const updated = await updateExecutionTask(task, { startAt: null, endAt: null, status: 'inbox' })
+    if (updated) showToast('已移出今天，任务仍保留在收集箱')
+  }
+
   async function toggleSubtask(taskId: number, subtask: Subtask) {
     const task = tasks.find((item) => item.id === taskId)
     if (!task) return
@@ -2770,6 +3090,7 @@ export default function App() {
       </div>
       <div className="app-main">
         <Topbar page={page} tasks={tasks} onMenu={() => setMenuOpen(true)} onOpenTask={openTask} onOpenReminderSettings={() => navigateSettings('reminders')} />
+        {page === 'now' && <NowPage tasks={tasks} idlePermission={idlePermission} onStart={startNowTask} onPause={pauseNowTask} onComplete={completeNowTask} onDelay={delayNowTask} onSkip={skipNowTask} onOpenTask={openTask} onNavigate={navigate} />}
         {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} onNavigate={navigate} onAiPlan={openAiPlanner} />}
         {page === 'inbox' && <InboxPage tasks={tasks} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} onNewTask={() => setEditor({ type: 'task' })} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} />}
         {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor({ type: 'task', schedule: true })} onOpenTask={openTask} />}

@@ -1,4 +1,5 @@
 export type PageKey =
+  | 'now'
   | 'today'
   | 'inbox'
   | 'calendar'
