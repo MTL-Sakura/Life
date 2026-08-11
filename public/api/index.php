@@ -716,6 +716,36 @@ switch ($action) {
             Http::json(['error' => $error->getMessage()], $error->httpStatus());
         }
 
+    case 'ai.plan.rebalance':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $energy = validEnergy($input['currentEnergy'] ?? null);
+        $mode = (string) ($input['mode'] ?? 'normal');
+        $latestEndValue = validTime(nullableString($input['latestEnd'] ?? null));
+        if ($energy === null || !in_array($mode, ['normal', 'low_energy'], true) || $latestEndValue === null) {
+            Http::json(['error' => '请选择当前精力、继续方式和最晚结束时间。'], 422);
+        }
+        $zone = new DateTimeZone($timezone);
+        $nowLocal = new DateTimeImmutable('now', $zone);
+        $latestEnd = substr($latestEndValue, 0, 5);
+        $latestEndAt = new DateTimeImmutable($nowLocal->format('Y-m-d') . ' ' . $latestEndValue, $zone);
+        if ($latestEndAt <= $nowLocal->modify('+15 minutes')) {
+            Http::json(['error' => '最晚结束时间至少需要比现在晚 15 分钟。'], 422);
+        }
+        $focusStatement = $db->prepare('SELECT daily_focus_task_id FROM daily_checkins WHERE user_id = ? AND local_date = ? LIMIT 1');
+        $focusStatement->execute([$userId, $nowLocal->format('Y-m-d')]);
+        $dailyFocusTaskId = nullableInt($focusStatement->fetchColumn());
+        try {
+            Http::json(['plan' => (new AiPlanner())->generate($db, $userId, $timezone, 'rebalance', [], [
+                'mode' => $mode,
+                'currentEnergy' => $energy,
+                'latestEnd' => $latestEnd,
+                'dailyFocusTaskId' => $dailyFocusTaskId,
+            ])], 201);
+        } catch (AiPlannerException $error) {
+            Http::json(['error' => $error->getMessage()], $error->httpStatus());
+        }
+
     case 'ai.apply':
         Http::requireMethod('POST');
         $input = Http::input();

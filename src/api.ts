@@ -1,4 +1,4 @@
-import type { AiPlan, BackupPreview, BootstrapData, EveningDecision, Habit, MorningCheckinInput, PlanImportDocument, PlanImportResult, Project, SessionUser, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BackupPreview, BootstrapData, EveningDecision, Habit, MorningCheckinInput, PlanImportDocument, PlanImportResult, Project, RebalanceInput, SessionUser, Subtask, Task, UserSettings } from './types'
 
 let csrfToken: string | null = null
 
@@ -162,6 +162,11 @@ export const api = {
 
   async createWeeklyAiPlan(): Promise<AiPlan> {
     const result = await request<{ plan: AiPlan }>('ai.plan.week', { method: 'POST', body: {} })
+    return result.plan
+  },
+
+  async createRebalancePlan(input: RebalanceInput): Promise<AiPlan> {
+    const result = await request<{ plan: AiPlan }>('ai.plan.rebalance', { method: 'POST', body: input })
     return result.plan
   },
 

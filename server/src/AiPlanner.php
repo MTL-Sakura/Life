@@ -15,7 +15,7 @@ final class AiPlanner
 {
     private const MAX_SOURCE_TASKS = 20;
 
-    public function generate(PDO $db, int $userId, string $timezone, string $scope = 'today', array $reviewContext = []): array
+    public function generate(PDO $db, int $userId, string $timezone, string $scope = 'today', array $reviewContext = [], array $runtimeContext = []): array
     {
         $apiKey = Config::get('OPENAI_API_KEY');
         if ($apiKey === null || trim($apiKey) === '') {
@@ -25,7 +25,7 @@ final class AiPlanner
         $zone = $this->timezone($timezone);
         $now = new DateTimeImmutable('now', $zone);
         $today = $now->setTime(0, 0);
-        $scope = $scope === 'next_week' ? 'next_week' : 'today';
+        $scope = in_array($scope, ['today', 'next_week', 'rebalance'], true) ? $scope : 'today';
         if ($scope === 'next_week') {
             $daysUntilMonday = 8 - (int) $today->format('N');
             $windowStart = $today->modify("+{$daysUntilMonday} days");
@@ -35,15 +35,27 @@ final class AiPlanner
             $windowEnd = $today->modify('+1 day');
         }
         $preferences = $this->preferences($db, $userId);
+        $runtimeContext = $scope === 'rebalance' ? $this->rebalanceContext($runtimeContext, $preferences) : [];
+        if ($scope === 'rebalance') {
+            $preferences['planningEndTime'] = min($preferences['planningEndTime'], $runtimeContext['latestEnd']);
+        }
         $dailyLimit = max(1, min(10, (int) Config::get('OPENAI_DAILY_LIMIT', '2')));
         $usedToday = $this->usageToday($db, $userId, $today);
         if ($usedToday >= $dailyLimit) {
             throw new AiPlannerException("今天的 AI 安排次数已经用完了，明天可以再使用 {$dailyLimit} 次。", 429);
         }
 
-        $tasks = $this->sourceTasks($db, $userId, $timezone, $windowStart, $windowEnd, $scope === 'next_week');
+        $tasks = $this->sourceTasks(
+            $db,
+            $userId,
+            $timezone,
+            $windowStart,
+            $windowEnd,
+            $scope === 'next_week',
+            $scope !== 'rebalance',
+        );
         if ($tasks === []) {
-            throw new AiPlannerException($scope === 'next_week' ? '目前没有需要放进下周的灵活任务。' : '今天没有需要整理的任务。');
+            throw new AiPlannerException($scope === 'next_week' ? '目前没有需要放进下周的灵活任务。' : ($scope === 'rebalance' ? '余下今天没有可以重排的任务。' : '今天没有需要整理的任务。'));
         }
 
         $sourceTaskIds = array_map(static fn (array $task): int => (int) $task['id'], $tasks);
@@ -66,10 +78,12 @@ final class AiPlanner
         $planId = (int) $db->lastInsertId();
 
         try {
-            $response = $this->requestPlan($apiKey, $model, $timezone, $now, $windowStart, $windowEnd, $tasks, $busy, $preferences, $scope, $reviewContext);
+            $response = $this->requestPlan($apiKey, $model, $timezone, $now, $windowStart, $windowEnd, $tasks, $busy, $preferences, $scope, $reviewContext, $runtimeContext);
             $earliestStart = $scope === 'next_week' ? $windowStart : $now;
             $proposal = $this->validateProposal($response['proposal'], $tasks, $busy, $earliestStart, $windowEnd, $zone, $preferences, $scope);
-            if ($proposal['items'] === []) {
+            $proposal['scope'] = $scope;
+            $proposal['rebalance'] = $runtimeContext;
+            if ($proposal['items'] === [] && !($scope === 'rebalance' && $proposal['skipped'] !== [])) {
                 throw new AiPlannerException('AI 没有生成可用的时间安排，请稍后再试。', 502);
             }
 
@@ -91,6 +105,7 @@ final class AiPlanner
                 $scope,
                 $windowStart,
                 $windowEnd->modify('-1 day'),
+                $runtimeContext,
             );
         } catch (Throwable $error) {
             $message = $this->truncate($error->getMessage(), 500);
@@ -135,6 +150,8 @@ final class AiPlanner
             throw new AiPlannerException('AI 建议的任务列表已经损坏。', 500);
         }
         $sourcePlaceholders = $sourceTaskIds === [] ? '0' : implode(', ', array_fill(0, count($sourceTaskIds), '?'));
+        $sourceTaskMap = array_fill_keys($sourceTaskIds, true);
+        $proposalScope = (string) ($proposal['scope'] ?? 'today');
         $db->beginTransaction();
         try {
             $taskStatement = $db->prepare('SELECT * FROM tasks WHERE id = ? AND user_id = ? FOR UPDATE');
@@ -156,17 +173,22 @@ final class AiPlanner
                 'INSERT INTO task_schedule_blocks (user_id, task_id, start_at, end_at, source, position)
                  VALUES (?, ?, ?, ?, "ai", ?)'
             );
-            if ($sourceTaskIds !== []) {
-                $db->prepare('DELETE FROM task_schedule_blocks WHERE user_id = ? AND task_id IN (' . $sourcePlaceholders . ')')
-                    ->execute([$userId, ...$sourceTaskIds]);
-            }
+            $deleteBlocks = $db->prepare('DELETE FROM task_schedule_blocks WHERE user_id = ? AND task_id = ?');
+            $activeFocus = $db->prepare('SELECT id FROM focus_sessions WHERE task_id = ? AND status IN ("running", "paused") LIMIT 1 FOR UPDATE');
 
             foreach ($proposal['items'] as $item) {
                 $taskId = (int) ($item['taskId'] ?? 0);
+                if (!isset($sourceTaskMap[$taskId])) {
+                    throw new AiPlannerException('AI 建议包含了不属于本次计划的任务。', 409);
+                }
                 $taskStatement->execute([$taskId, $userId]);
                 $task = $taskStatement->fetch();
                 if (!$task || in_array($task['status'], ['completed', 'cancelled'], true) || $task['schedule_mode'] === 'fixed') {
                     throw new AiPlannerException('任务状态已经变化，请重新生成 AI 安排。', 409);
+                }
+                $activeFocus->execute([$taskId]);
+                if ($activeFocus->fetchColumn()) {
+                    throw new AiPlannerException('有任务已经开始专注，请结束计时后重新生成安排。', 409);
                 }
 
                 $blocks = (array) ($item['blocks'] ?? []);
@@ -195,6 +217,7 @@ final class AiPlanner
                     : (new DateTimeImmutable($startUtc, new DateTimeZone('UTC')))
                         ->sub(new DateInterval('PT' . max(0, $reminderMinutes) . 'M'))
                         ->format('Y-m-d H:i:s');
+                $deleteBlocks->execute([$userId, $taskId]);
                 $update->execute([
                     $this->priority((string) ($item['priority'] ?? 'medium')),
                     $startUtc,
@@ -207,6 +230,58 @@ final class AiPlanner
                     $insertBlock->execute([$userId, $taskId, $blockStart, $blockEnd, $position]);
                 }
                 $appliedTaskIds[] = $taskId;
+            }
+
+            if ($proposalScope === 'rebalance') {
+                $deferTask = $db->prepare(
+                    'UPDATE tasks SET status = "inbox", start_at = NULL, end_at = NULL, schedule_mode = "flexible",
+                     reminder_at = NULL, reminder_sent_at = NULL WHERE id = ? AND user_id = ?'
+                );
+                $skipOccurrence = $db->prepare(
+                    'UPDATE tasks SET status = "cancelled", occurrence_state = "skipped", reminder_at = NULL,
+                     reminder_sent_at = NULL WHERE id = ? AND user_id = ?'
+                );
+                $recordDecision = $db->prepare(
+                    'INSERT INTO daily_task_decisions (user_id, task_id, local_date, action, failure_reason, task_title)
+                     VALUES (?, ?, ?, ?, ?, ?)'
+                );
+                $today = (new DateTimeImmutable('now', $zone))->format('Y-m-d');
+                $rebalance = is_array($proposal['rebalance'] ?? null) ? $proposal['rebalance'] : [];
+                $failureReason = ($rebalance['mode'] ?? null) === 'low_energy' || (int) ($rebalance['currentEnergy'] ?? 3) <= 2
+                    ? 'energy'
+                    : 'changed';
+                $appliedMap = array_fill_keys($appliedTaskIds, true);
+
+                foreach ((array) ($proposal['skipped'] ?? []) as $item) {
+                    $taskId = (int) ($item['taskId'] ?? 0);
+                    if (($item['action'] ?? 'keep') === 'keep' || isset($appliedMap[$taskId]) || !isset($sourceTaskMap[$taskId])) {
+                        continue;
+                    }
+                    $taskStatement->execute([$taskId, $userId]);
+                    $task = $taskStatement->fetch();
+                    if (!$task || in_array($task['status'], ['completed', 'cancelled'], true) || $task['schedule_mode'] === 'fixed') {
+                        throw new AiPlannerException('任务状态已经变化，请重新生成 AI 安排。', 409);
+                    }
+                    $activeFocus->execute([$taskId]);
+                    if ($activeFocus->fetchColumn()) {
+                        throw new AiPlannerException('有任务已经开始专注，请结束计时后重新生成安排。', 409);
+                    }
+                    $deleteBlocks->execute([$userId, $taskId]);
+                    $recurring = !empty($task['recurrence_rule']);
+                    if ($recurring) {
+                        $skipOccurrence->execute([$taskId, $userId]);
+                    } else {
+                        $deferTask->execute([$taskId, $userId]);
+                    }
+                    $recordDecision->execute([
+                        $userId,
+                        $taskId,
+                        $today,
+                        $recurring ? 'drop' : 'later',
+                        $failureReason,
+                        (string) $task['title'],
+                    ]);
+                }
             }
 
             $db->prepare('UPDATE ai_plans SET status = "applied", applied_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?')
@@ -237,6 +312,7 @@ final class AiPlanner
         array $preferences,
         string $scope,
         array $reviewContext,
+        array $runtimeContext,
     ): array {
         $effort = (string) Config::get('OPENAI_REASONING_EFFORT', 'low');
         if (!in_array($effort, ['none', 'low', 'medium', 'high', 'xhigh'], true)) {
@@ -263,6 +339,8 @@ final class AiPlanner
                 'duration_minutes' => (int) $task['estimated_minutes'],
                 'focus' => (bool) $task['is_focus'],
                 'schedule_mode' => $task['schedule_mode'],
+                'current_start_at' => $task['start_local'],
+                'current_end_at' => $task['end_local'],
                 'allowed_window' => $task['schedule_mode'] === 'window' ? [$task['window_start_local'], $task['window_end_local']] : null,
                 'due_at' => $task['due_local'],
                 'project' => $task['project_title'] ?? null,
@@ -270,11 +348,14 @@ final class AiPlanner
             ], $tasks),
             'busy_blocks' => $busy,
             'weekly_review' => $scope === 'next_week' ? $reviewContext : null,
+            'rebalance' => $scope === 'rebalance' ? $runtimeContext : null,
         ];
 
-        $developerPrompt = $scope === 'next_week'
-            ? '你是人生看板的周回顾与下周安排助手。先根据 weekly_review 找出真实节奏，尤其参考 estimateAccuracy、calibrationActualMinutes、failureReasons、精力和迁移数据，给出最多3条温和、具体、可执行的 adjustments；当实际耗时明显高于预计时建议减少负荷或拆分，当某个失败原因反复出现时建议换时段或降低启动难度。再安排给出的灵活任务。不要追求塞满一周，不创建、不删除、不改标题，也不要擅自更改任务预计时长。必须遵守 planning_window、每天的午晚餐、任务时间窗、固定日程和缓冲；开始时间使用15分钟刻度。专注任务超过90分钟时拆成不超过90分钟的多个区块，区块总时长等于任务时长，区块之间至少间隔30分钟。无法合理安排的任务放入 skipped。输出简洁中文。'
-            : '你是人生看板的今日整理助手。给出最多3条简短的执行 adjustments，并只调整给出的任务，不创建、不删除、不改标题。必须遵守 planning_window、午晚餐、任务时间窗、现有日程和缓冲；开始时间使用15分钟刻度。专注任务超过90分钟时拆成不超过90分钟的多个区块，区块总时长等于任务时长，区块之间至少间隔30分钟。无法合理安排的任务放入 skipped，并只建议延期或跳过。输出简洁中文理由。';
+        $developerPrompt = match ($scope) {
+            'next_week' => '你是人生看板的周回顾与下周安排助手。先根据 weekly_review 找出真实节奏，尤其参考 estimateAccuracy、calibrationActualMinutes、failureReasons、精力和迁移数据，给出最多3条温和、具体、可执行的 adjustments；当实际耗时明显高于预计时建议减少负荷或拆分，当某个失败原因反复出现时建议换时段或降低启动难度。再安排给出的灵活任务。不要追求塞满一周，不创建、不删除、不改标题，也不要擅自更改任务预计时长。必须遵守 planning_window、每天的午晚餐、任务时间窗、固定日程和缓冲；开始时间使用15分钟刻度。专注任务超过90分钟时拆成不超过90分钟的多个区块，区块总时长等于任务时长，区块之间至少间隔30分钟。无法合理安排的任务放入 skipped。输出简洁中文。',
+            'rebalance' => '你是人生看板的余下今天重排助手。只处理当前时间之后，并参考 rebalance.currentEnergy、mode、latestEnd 和 dailyFocusTaskId。normal 模式保留可现实完成的重点；low_energy 模式主动减负，只留下今日重点和少量低启动成本任务。不要追回已经错过的全部计划，不创建、不删除、不改标题、不缩短任务预计时长。固定安排、午晚餐、任务时间窗、最晚结束时间和缓冲必须保留；开始时间使用15分钟刻度。今日重点应优先保留，除非时间上确实无法完成。专注任务超过90分钟时拆成不超过90分钟的区块，区块总时长必须等于任务时长，区块之间至少休息30分钟。今天放不下或不适合当前精力的任务放入 skipped。summary 要明确今天保留了什么、放下了什么，输出温和简洁中文。',
+            default => '你是人生看板的今日整理助手。给出最多3条简短的执行 adjustments，并只调整给出的任务，不创建、不删除、不改标题。必须遵守 planning_window、午晚餐、任务时间窗、现有日程和缓冲；开始时间使用15分钟刻度。专注任务超过90分钟时拆成不超过90分钟的多个区块，区块总时长等于任务时长，区块之间至少间隔30分钟。无法合理安排的任务放入 skipped，并只建议延期或跳过。输出简洁中文理由。',
+        };
 
         $request = [
             'model' => $model,
@@ -525,6 +606,7 @@ final class AiPlanner
                     'taskId' => $taskId,
                     'title' => $task['title'],
                     'reason' => $invalidReason,
+                    'action' => $this->skippedAction($task, $scope),
                 ];
                 continue;
             }
@@ -554,6 +636,19 @@ final class AiPlanner
                 'taskId' => $taskId,
                 'title' => $taskMap[$taskId]['title'],
                 'reason' => $this->truncate(trim((string) ($item['reason'] ?? '暂时没有合适的时间。')), 240),
+                'action' => $this->skippedAction($taskMap[$taskId], $scope),
+            ];
+        }
+
+        foreach ($taskMap as $taskId => $task) {
+            if (isset($seen[$taskId])) {
+                continue;
+            }
+            $skipped[] = [
+                'taskId' => $taskId,
+                'title' => $task['title'],
+                'reason' => $scope === 'rebalance' ? '这项任务没有进入余下今天的可执行方案。' : '暂时没有合适的时间。',
+                'action' => $this->skippedAction($task, $scope),
             ];
         }
 
@@ -566,14 +661,22 @@ final class AiPlanner
             }
         }
         return [
-            'summary' => $this->truncate(trim((string) ($proposal['summary'] ?? ($scope === 'next_week' ? '已经根据本周节奏准备了下周草案。' : '已经按优先级整理了今天。'))), 300),
+            'summary' => $this->truncate(trim((string) ($proposal['summary'] ?? ($scope === 'next_week' ? '已经根据本周节奏准备了下周草案。' : ($scope === 'rebalance' ? '已经重新整理了余下今天。' : '已经按优先级整理了今天。')))), 300),
             'adjustments' => $adjustments,
             'items' => $items,
             'skipped' => $skipped,
         ];
     }
 
-    private function sourceTasks(PDO $db, int $userId, string $timezone, DateTimeImmutable $windowStart, DateTimeImmutable $windowEnd, bool $includeUndatedInbox = false): array
+    private function sourceTasks(
+        PDO $db,
+        int $userId,
+        string $timezone,
+        DateTimeImmutable $windowStart,
+        DateTimeImmutable $windowEnd,
+        bool $includeUndatedInbox = false,
+        bool $includeInbox = true,
+    ): array
     {
         $startUtc = $windowStart->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $endUtc = $windowEnd->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
@@ -584,16 +687,24 @@ final class AiPlanner
              LEFT JOIN projects ON projects.id = tasks.project_id
              LEFT JOIN categories ON categories.id = tasks.category_id
              WHERE tasks.user_id = ? AND tasks.status NOT IN ("completed", "cancelled") AND tasks.schedule_mode != "fixed"
+               AND NOT EXISTS (SELECT 1 FROM focus_sessions WHERE focus_sessions.task_id = tasks.id AND focus_sessions.status IN ("running", "paused"))
                AND ((tasks.start_at >= ? AND tasks.start_at < ?)
-                    OR (tasks.status = "inbox" AND tasks.start_at IS NULL AND (? = 1 OR (tasks.due_at IS NOT NULL AND tasks.due_at < ?))))
+                    OR (? = 1 AND tasks.status = "inbox" AND tasks.start_at IS NULL
+                        AND (? = 1 OR (tasks.due_at IS NOT NULL AND tasks.due_at < ?))))
              ORDER BY FIELD(tasks.priority, "high", "medium", "low"), tasks.due_at IS NULL, tasks.due_at, tasks.created_at
              LIMIT ' . self::MAX_SOURCE_TASKS
         );
-        $statement->execute([$userId, $startUtc, $endUtc, (int) $includeUndatedInbox, $nearDueUtc]);
+        $statement->execute([$userId, $startUtc, $endUtc, (int) $includeInbox, (int) $includeUndatedInbox, $nearDueUtc]);
         $zone = $this->timezone($timezone);
         return array_map(static function (array $task) use ($zone): array {
             $task['due_local'] = $task['due_at']
                 ? (new DateTimeImmutable((string) $task['due_at'], new DateTimeZone('UTC')))->setTimezone($zone)->format(DATE_ATOM)
+                : null;
+            $task['start_local'] = $task['start_at']
+                ? (new DateTimeImmutable((string) $task['start_at'], new DateTimeZone('UTC')))->setTimezone($zone)->format(DATE_ATOM)
+                : null;
+            $task['end_local'] = $task['end_at']
+                ? (new DateTimeImmutable((string) $task['end_at'], new DateTimeZone('UTC')))->setTimezone($zone)->format(DATE_ATOM)
                 : null;
             $task['window_start_local'] = $task['window_start'] ? substr((string) $task['window_start'], 0, 5) : null;
             $task['window_end_local'] = $task['window_end'] ? substr((string) $task['window_end'], 0, 5) : null;
@@ -672,6 +783,33 @@ final class AiPlanner
         ];
     }
 
+    private function rebalanceContext(array $context, array $preferences): array
+    {
+        $mode = ($context['mode'] ?? null) === 'low_energy' ? 'low_energy' : 'normal';
+        $energy = max(1, min(5, (int) ($context['currentEnergy'] ?? 3)));
+        $latestEnd = trim((string) ($context['latestEnd'] ?? $preferences['planningEndTime']));
+        if (!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $latestEnd)) {
+            $latestEnd = $preferences['planningEndTime'];
+        }
+        $dailyFocusTaskId = isset($context['dailyFocusTaskId']) && (int) $context['dailyFocusTaskId'] > 0
+            ? (int) $context['dailyFocusTaskId']
+            : null;
+        return [
+            'mode' => $mode,
+            'currentEnergy' => $energy,
+            'latestEnd' => $latestEnd,
+            'dailyFocusTaskId' => $dailyFocusTaskId,
+        ];
+    }
+
+    private function skippedAction(array $task, string $scope): string
+    {
+        if ($scope !== 'rebalance') {
+            return 'keep';
+        }
+        return empty($task['recurrence_rule']) ? 'later' : 'skip';
+    }
+
     private function insideTaskWindow(DateTimeImmutable $start, DateTimeImmutable $end, array $task): bool
     {
         if (empty($task['window_start_local']) || empty($task['window_end_local'])) {
@@ -744,6 +882,7 @@ final class AiPlanner
         string $scope,
         DateTimeImmutable $targetStart,
         DateTimeImmutable $targetEnd,
+        array $runtimeContext,
     ): array {
         return [
             'id' => $planId,
@@ -757,6 +896,9 @@ final class AiPlanner
             'scope' => $scope,
             'targetStartDate' => $targetStart->format('Y-m-d'),
             'targetEndDate' => $targetEnd->format('Y-m-d'),
+            'mode' => $runtimeContext['mode'] ?? null,
+            'currentEnergy' => $runtimeContext['currentEnergy'] ?? null,
+            'latestEnd' => $runtimeContext['latestEnd'] ?? null,
         ];
     }
 }

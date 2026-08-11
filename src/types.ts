@@ -231,6 +231,15 @@ export type AiPlanSkippedItem = {
   taskId: number
   title: string
   reason: string
+  action?: 'keep' | 'later' | 'skip'
+}
+
+export type AiPlanScope = 'today' | 'next_week' | 'rebalance'
+
+export type RebalanceInput = {
+  mode: 'normal' | 'low_energy'
+  currentEnergy: number
+  latestEnd: string
 }
 
 export type AiPlan = {
@@ -242,9 +251,12 @@ export type AiPlan = {
   skipped: AiPlanSkippedItem[]
   remainingUses: number
   expiresAt: string
-  scope: 'today' | 'next_week'
+  scope: AiPlanScope
   targetStartDate: string
   targetEndDate: string
+  mode?: RebalanceInput['mode'] | null
+  currentEnergy?: number | null
+  latestEnd?: string | null
 }
 
 export type PlanImportDocument = {

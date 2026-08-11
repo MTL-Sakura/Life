@@ -570,6 +570,23 @@ p {
   color: #2e5064;
 }
 
+.rebalance-trigger {
+  border-color: #9fb4aa;
+  color: #365b4b;
+  background: #f2f7f4;
+}
+
+.rebalance-trigger:hover {
+  border-color: #648675;
+  color: #234b3a;
+}
+
+.now-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .today-progress {
   width: 180px;
   display: grid;
@@ -3225,6 +3242,146 @@ p {
   background: #fff;
 }
 
+.rebalance-setup {
+  display: grid;
+  gap: 20px;
+  padding: 22px;
+}
+
+.rebalance-overview {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.rebalance-overview > span {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--green);
+  background: var(--green-light);
+}
+
+.rebalance-overview strong,
+.rebalance-overview p {
+  display: block;
+}
+
+.rebalance-overview strong {
+  font-family: Georgia, "Songti SC", serif;
+  font-size: 15px;
+}
+
+.rebalance-overview p {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.rebalance-mode-field,
+.rebalance-mode-field legend {
+  padding: 0;
+  border: 0;
+}
+
+.rebalance-mode-field legend {
+  margin-bottom: 9px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.rebalance-mode-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.rebalance-mode-control button {
+  min-height: 66px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 10px 13px;
+  border: 0;
+  border-right: 1px solid var(--line-strong);
+  color: var(--muted);
+  background: #fff;
+  text-align: left;
+}
+
+.rebalance-mode-control button:last-child {
+  border-right: 0;
+}
+
+.rebalance-mode-control button.active {
+  color: var(--green);
+  background: var(--green-light);
+}
+
+.rebalance-mode-control strong,
+.rebalance-mode-control small {
+  display: block;
+}
+
+.rebalance-mode-control strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.rebalance-mode-control small {
+  margin-top: 4px;
+  font-size: 8px;
+}
+
+.rebalance-end-field {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.rebalance-end-field > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.rebalance-end-field input {
+  width: 112px;
+  height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  padding: 0 9px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+  font-size: 10px;
+}
+
+.rebalance-focus-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--green);
+  font-size: 9px;
+}
+
 .morning-basics input,
 .daily-focus-select select {
   height: 42px;
@@ -4452,6 +4609,17 @@ p {
 @media (max-width: 680px) {
   .now-heading {
     align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .now-heading-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .now-heading-actions button {
+    width: 100%;
   }
 
   .now-stage {
@@ -5022,6 +5190,25 @@ p {
   .daily-flow-body {
     gap: 18px;
     padding: 18px;
+  }
+
+  .rebalance-setup {
+    gap: 17px;
+    padding: 18px;
+  }
+
+  .rebalance-mode-control {
+    grid-template-columns: 1fr;
+  }
+
+  .rebalance-mode-control button {
+    min-height: 58px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line-strong);
+  }
+
+  .rebalance-mode-control button:last-child {
+    border-bottom: 0;
   }
 
   .morning-basics {

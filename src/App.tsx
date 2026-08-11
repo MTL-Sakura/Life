@@ -3,6 +3,7 @@ import {
   AlarmClock,
   Archive,
   BarChart3,
+  BatteryMedium,
   Bell,
   BookOpen,
   CalendarClock,
@@ -35,6 +36,7 @@ import {
   Pause,
   Play,
   Repeat2,
+  RefreshCcw,
   Search,
   Settings,
   ShieldCheck,
@@ -53,7 +55,7 @@ import {
 } from 'lucide-react'
 import { api } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
-import type { AiPlan, BackupPreview, BackupRecord, BootstrapData, Category, DailyRhythm, EveningDecision, FailureReason, Habit, MorningCheckinInput, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, ReviewSummary, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, AiPlanScope, BackupPreview, BackupRecord, BootstrapData, Category, DailyRhythm, EveningDecision, FailureReason, Habit, MorningCheckinInput, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, RebalanceInput, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
   { key: 'now' as const, label: '现在', icon: Play },
@@ -696,7 +698,7 @@ function aiPlanTimeLabel(startAt: string, endAt: string) {
 }
 
 function AiPlannerModal({ scope, plan, loading, applying, error, onClose, onRetry, onApply }: {
-  scope: 'today' | 'next_week'
+  scope: AiPlanScope
   plan: AiPlan | null
   loading: boolean
   applying: boolean
@@ -706,14 +708,17 @@ function AiPlannerModal({ scope, plan, loading, applying, error, onClose, onRetr
   onApply: () => void
 }) {
   const weekly = scope === 'next_week'
+  const rebalancing = scope === 'rebalance'
+  const title = weekly ? '准备下周' : rebalancing ? '余下今天' : '整理今天'
+  const eyebrow = weekly ? 'WEEKLY PLAN' : rebalancing ? 'ADAPTIVE DAY' : 'SMART PLAN'
   return (
-    <ModalShell title={weekly ? '准备下周' : '整理今天'} eyebrow={weekly ? 'WEEKLY PLAN' : 'SMART PLAN'} onClose={onClose}>
+    <ModalShell title={title} eyebrow={eyebrow} onClose={onClose}>
       <div className="ai-plan-body">
         {loading && (
           <div className="ai-plan-loading" role="status">
             <span className="ai-plan-spinner"><Sparkles size={24} /></span>
-            <strong>{weekly ? '正在回顾并准备下周' : '正在整理今天'}</strong>
-            <p>{weekly ? '会根据本周真实节奏给出调整，并避开下周固定安排与吃饭时间。' : '会避开固定安排、吃饭时间和必要缓冲。'}</p>
+            <strong>{weekly ? '正在回顾并准备下周' : rebalancing ? '正在重新整理余下今天' : '正在整理今天'}</strong>
+            <p>{weekly ? '会根据本周真实节奏给出调整，并避开下周固定安排与吃饭时间。' : rebalancing ? '会保留固定安排、吃饭时间和今晚的结束边界。' : '会避开固定安排、吃饭时间和必要缓冲。'}</p>
           </div>
         )}
 
@@ -730,7 +735,7 @@ function AiPlannerModal({ scope, plan, loading, applying, error, onClose, onRetr
               <Sparkles size={19} />
               <div><strong>{plan.summary}</strong><span>今天还可以生成 {plan.remainingUses} 次新建议</span></div>
             </div>
-            {(plan.adjustments ?? []).length > 0 && <div className="ai-adjustments"><span>{weekly ? '下周调整' : '执行提示'}</span>{(plan.adjustments ?? []).map((adjustment, index) => <p key={`${index}-${adjustment}`}><strong>{index + 1}</strong>{adjustment}</p>)}</div>}
+            {(plan.adjustments ?? []).length > 0 && <div className="ai-adjustments"><span>{weekly ? '下周调整' : rebalancing ? '继续方式' : '执行提示'}</span>{(plan.adjustments ?? []).map((adjustment, index) => <p key={`${index}-${adjustment}`}><strong>{index + 1}</strong>{adjustment}</p>)}</div>}
             <div className="ai-plan-list">
               {plan.items.map((item) => (
                 <article className="ai-plan-item" key={item.taskId}>
@@ -742,8 +747,8 @@ function AiPlannerModal({ scope, plan, loading, applying, error, onClose, onRetr
             </div>
             {plan.skipped.length > 0 && (
               <details className="ai-plan-skipped">
-                <summary>暂未安排 {plan.skipped.length} 项</summary>
-                {plan.skipped.map((item) => <p key={item.taskId}><strong>{item.title}</strong><span>{item.reason}</span></p>)}
+                <summary>{rebalancing ? '将移出今天' : '暂未安排'} {plan.skipped.length} 项</summary>
+                {plan.skipped.map((item) => <p key={item.taskId}><strong>{item.title}</strong><span>{item.reason}{rebalancing && item.action !== 'keep' ? ` · ${item.action === 'skip' ? '仅跳过本次' : '送回收集箱'}` : ''}</span></p>)}
               </details>
             )}
           </>
@@ -752,7 +757,7 @@ function AiPlannerModal({ scope, plan, loading, applying, error, onClose, onRetr
       <footer className="modal-actions">
         <button type="button" className="outline-button" onClick={onClose}>{plan ? '暂不采用' : '关闭'}</button>
         {error && <button type="button" className="primary-button" onClick={onRetry}>重新生成</button>}
-        {plan && <button type="button" className="primary-button" onClick={onApply} disabled={applying}>{applying ? '写入中…' : `采用这 ${plan.items.length} 项${weekly ? '下周' : ''}安排`}</button>}
+        {plan && <button type="button" className="primary-button" onClick={onApply} disabled={applying}>{applying ? '写入中…' : rebalancing ? `采用方案 · 保留 ${plan.items.length} 项` : `采用这 ${plan.items.length} 项${weekly ? '下周' : ''}安排`}</button>}
       </footer>
     </ModalShell>
   )
@@ -1363,7 +1368,7 @@ function TaskCheck({ task, onToggle }: { task: Task; onToggle: (id: number) => v
   )
 }
 
-function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onComplete, onDelay, onSkip, onOpenTask, onNavigate }: {
+function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onComplete, onDelay, onSkip, onOpenTask, onNavigate, onRebalance }: {
   tasks: Task[]
   dailyRhythm: DailyRhythm
   idlePermission: IdlePermissionState
@@ -1374,6 +1379,7 @@ function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onCompl
   onSkip: (task: Task) => Promise<void>
   onOpenTask: (id: number) => void
   onNavigate: (page: PageKey) => void
+  onRebalance: () => void
 }) {
   const [clock, setClock] = useState(Date.now())
   const [busy, setBusy] = useState<string | null>(null)
@@ -1432,7 +1438,7 @@ function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onCompl
     <div className="page-content now-page">
       <section className="page-heading now-heading">
         <div><p className="eyebrow">NOW</p><h1>现在该做什么</h1><p>{berlinDate()}，系统已经替你缩小到一件事。</p></div>
-        <button type="button" className="outline-button" onClick={() => onNavigate('today')}>查看整天 <ChevronRight size={15} /></button>
+        <div className="now-heading-actions"><button type="button" className="outline-button rebalance-trigger" onClick={onRebalance}><RefreshCcw size={15} />重排余下</button><button type="button" className="outline-button" onClick={() => onNavigate('today')}>查看整天 <ChevronRight size={15} /></button></div>
       </section>
 
       <div className="now-layout">
@@ -1520,6 +1526,56 @@ function EnergyScale({ value, onChange, label }: { value: number; onChange: (val
         ))}
       </div>
     </fieldset>
+  )
+}
+
+function RebalanceSetupModal({ tasks, dailyRhythm, settings, onClose, onGenerate }: {
+  tasks: Task[]
+  dailyRhythm: DailyRhythm
+  settings: UserSettings
+  onClose: () => void
+  onGenerate: (input: RebalanceInput) => void
+}) {
+  const initialEnergy = dailyRhythm.morningEnergy ?? 3
+  const [currentEnergy, setCurrentEnergy] = useState(initialEnergy)
+  const [mode, setMode] = useState<RebalanceInput['mode']>(initialEnergy <= 2 ? 'low_energy' : 'normal')
+  const [latestEnd, setLatestEnd] = useState(settings.planningEndTime)
+  const [error, setError] = useState('')
+  const remaining = tasks.filter((task) => isOpenTask(task) && taskCalendarDate(task) === berlinIsoDate() && task.scheduleMode !== 'fixed')
+  const fixed = tasks.filter((task) => isOpenTask(task) && taskCalendarDate(task) === berlinIsoDate() && task.scheduleMode === 'fixed').length
+  const remainingMinutes = remaining.reduce((sum, task) => sum + task.duration, 0)
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    const [endHour, endMinute] = latestEnd.split(':').map(Number)
+    if (endHour * 60 + endMinute <= berlinClockMinutes() + 15) {
+      setError('最晚结束时间至少需要比现在晚 15 分钟。')
+      return
+    }
+    onGenerate({ mode, currentEnergy, latestEnd })
+  }
+
+  return (
+    <ModalShell title="重新整理余下今天" eyebrow="ADAPTIVE DAY" onClose={onClose}>
+      <form className="rebalance-setup" onSubmit={submit}>
+        <div className="rebalance-overview">
+          <span><RefreshCcw size={20} /></span>
+          <div><strong>{remaining.length} 项可以重排</strong><p>约 {Math.floor(remainingMinutes / 60)} 小时 {remainingMinutes % 60} 分钟{fixed > 0 ? ` · ${fixed} 项固定安排会保留` : ''}</p></div>
+        </div>
+        <fieldset className="rebalance-mode-field">
+          <legend>今天接下来怎么走？</legend>
+          <div className="rebalance-mode-control">
+            <button type="button" className={mode === 'normal' ? 'active' : ''} aria-pressed={mode === 'normal'} onClick={() => setMode('normal')}><RefreshCcw size={18} /><span><strong>正常继续</strong><small>保留现实可完成的重点</small></span></button>
+            <button type="button" className={mode === 'low_energy' ? 'active' : ''} aria-pressed={mode === 'low_energy'} onClick={() => setMode('low_energy')}><BatteryMedium size={18} /><span><strong>低能量保底</strong><small>主动减负，只留最重要的</small></span></button>
+          </div>
+        </fieldset>
+        <EnergyScale value={currentEnergy} onChange={setCurrentEnergy} label="现在还有多少精力？" />
+        <label className="rebalance-end-field"><span><Clock3 size={16} />今晚最晚结束</span><input type="time" value={latestEnd} onChange={(event) => { setLatestEnd(event.target.value); setError('') }} /></label>
+        {dailyRhythm.focusTaskTitle && <div className="rebalance-focus-note"><Flag size={15} /><span>今日重点：<strong>{dailyRhythm.focusTaskTitle}</strong></span></div>}
+        {error && <p className="form-error">{error}</p>}
+        <footer className="modal-actions"><button type="button" className="outline-button" onClick={onClose}>取消</button><button type="submit" className="primary-button"><Sparkles size={16} />生成余下方案</button></footer>
+      </form>
+    </ModalShell>
   )
 }
 
@@ -1669,7 +1725,7 @@ function EveningCheckinModal({ rhythm, tasks, onClose, onSave }: {
   )
 }
 
-function TodayPage({ tasks, habits, projects, dailyRhythm, quickEntry, setQuickEntry, addTask, toggleTask, toggleHabit, onOpenTask, onScheduleTask, onNavigate, onAiPlan, onOpenDailyFlow }: {
+function TodayPage({ tasks, habits, projects, dailyRhythm, quickEntry, setQuickEntry, addTask, toggleTask, toggleHabit, onOpenTask, onScheduleTask, onNavigate, onRebalance, onOpenDailyFlow }: {
   tasks: Task[]
   habits: Habit[]
   projects: Project[]
@@ -1682,7 +1738,7 @@ function TodayPage({ tasks, habits, projects, dailyRhythm, quickEntry, setQuickE
   onOpenTask: (id: number) => void
   onScheduleTask: (id: number) => void
   onNavigate: (page: PageKey) => void
-  onAiPlan: () => void
+  onRebalance: () => void
   onOpenDailyFlow: () => void
 }) {
   const scheduled = tasks
@@ -1712,7 +1768,7 @@ function TodayPage({ tasks, habits, projects, dailyRhythm, quickEntry, setQuickE
         </div>
         <div className="today-heading-actions">
           <button type="button" className="outline-button daily-flow-trigger" onClick={onOpenDailyFlow} disabled={Boolean(dailyRhythm.closedAt)}>{dailyRhythm.closedAt ? <CheckCircle2 size={17} /> : dailyRhythm.morningStatus === 'pending' ? <Sunrise size={17} /> : <Sunset size={17} />}{dailyRhythm.closedAt ? '今日已收尾' : dailyRhythm.morningStatus === 'pending' ? '开始今天' : '结束今天'}</button>
-          <button type="button" className="outline-button ai-plan-trigger" onClick={onAiPlan}><Sparkles size={17} /> 整理今天</button>
+          <button type="button" className="outline-button ai-plan-trigger rebalance-trigger" onClick={onRebalance}><RefreshCcw size={17} /> 重排余下</button>
           <div className="today-progress">
             <strong>{progress}%</strong>
             <span>今日进度</span>
@@ -2606,7 +2662,9 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [toast, setToast] = useState('')
   const [aiPlannerOpen, setAiPlannerOpen] = useState(false)
-  const [aiPlanScope, setAiPlanScope] = useState<'today' | 'next_week'>('today')
+  const [aiPlanScope, setAiPlanScope] = useState<AiPlanScope>('today')
+  const [rebalanceSetupOpen, setRebalanceSetupOpen] = useState(false)
+  const [rebalanceInput, setRebalanceInput] = useState<RebalanceInput | null>(null)
   const [aiPlan, setAiPlan] = useState<AiPlan | null>(null)
   const [aiPlanLoading, setAiPlanLoading] = useState(false)
   const [aiPlanApplying, setAiPlanApplying] = useState(false)
@@ -2712,10 +2770,18 @@ export default function App() {
     window.setTimeout(() => setToast(''), 2200)
   }
 
-  function demoAiPlan(scope: 'today' | 'next_week'): AiPlan {
-    const source = tasks.filter((task) => !task.completed && task.unscheduled).slice(0, 8)
-    if (source.length === 0) throw new Error('收集箱里没有需要安排的任务。')
+  function demoAiPlan(scope: AiPlanScope, runtime?: RebalanceInput): AiPlan {
     const today = berlinIsoDate()
+    const rebalancing = scope === 'rebalance'
+    const source = (rebalancing
+      ? tasks.filter((task) => isOpenTask(task) && taskCalendarDate(task) === today && task.scheduleMode !== 'fixed')
+      : tasks.filter((task) => !task.completed && task.unscheduled))
+      .sort((left, right) => {
+        const focusOrder = Number(right.id === dailyRhythm.focusTaskId) - Number(left.id === dailyRhythm.focusTaskId)
+        return focusOrder || taskPriorityWeight(left) - taskPriorityWeight(right) || (taskStartMinutes(left) ?? 24 * 60) - (taskStartMinutes(right) ?? 24 * 60)
+      })
+      .slice(0, 8)
+    if (source.length === 0) throw new Error(rebalancing ? '余下今天没有可以重排的任务。' : '收集箱里没有需要安排的任务。')
     const targetStart = scope === 'next_week' ? shiftIsoDate(currentWeekDateIso(0), 7) : today
     const targetDays = scope === 'next_week' ? 7 : 1
     const nowParts = new Intl.DateTimeFormat('en-GB', {
@@ -2726,29 +2792,50 @@ export default function App() {
     }).formatToParts(new Date())
     const nowMinutes = Number(nowParts.find((part) => part.type === 'hour')?.value ?? 8) * 60
       + Number(nowParts.find((part) => part.type === 'minute')?.value ?? 0)
+    const sourceIds = new Set(source.map((task) => task.id))
     const occupied = tasks.flatMap((task) => {
       const date = task.startAt?.slice(0, 10) ?? (task.start && !task.unscheduled ? today : null)
       const start = task.startAt?.slice(11, 16) ?? task.start
       const end = task.endAt?.slice(11, 16) ?? task.end
-      if (task.completed || !date || !start || !end) return []
+      if (task.completed || sourceIds.has(task.id) || !date || !start || !end) return []
       return [{
         date,
         start: Number(start.slice(0, 2)) * 60 + Number(start.slice(3, 5)),
         end: Number(end.slice(0, 2)) * 60 + Number(end.slice(3, 5)),
       }]
     })
+    for (let dayOffset = 0; dayOffset < targetDays; dayOffset += 1) {
+      const date = shiftIsoDate(targetStart, dayOffset)
+      for (const [start, end] of [[settings.lunchStartTime, settings.lunchEndTime], [settings.dinnerStartTime, settings.dinnerEndTime]]) {
+        occupied.push({
+          date,
+          start: Number(start.slice(0, 2)) * 60 + Number(start.slice(3, 5)),
+          end: Number(end.slice(0, 2)) * 60 + Number(end.slice(3, 5)),
+        })
+      }
+    }
     const items: AiPlan['items'] = []
     const skipped: AiPlan['skipped'] = []
+    const planningStart = Number(settings.planningStartTime.slice(0, 2)) * 60 + Number(settings.planningStartTime.slice(3, 5))
+    const requestedEnd = runtime?.latestEnd ?? settings.planningEndTime
+    const planningEnd = Number(requestedEnd.slice(0, 2)) * 60 + Number(requestedEnd.slice(3, 5))
+    const lowEnergyBudget = runtime?.mode === 'low_energy' ? [0, 60, 90, 150, 240, 360][runtime.currentEnergy] : Number.POSITIVE_INFINITY
+    let scheduledMinutes = 0
 
     source.forEach((task) => {
       const duration = Math.max(1, task.duration)
+      const skipAction = task.recurrenceRule ? 'skip' : 'later'
+      if (rebalancing && scheduledMinutes + duration > lowEnergyBudget && task.id !== dailyRhythm.focusTaskId) {
+        skipped.push({ taskId: task.id, title: task.title, reason: '低能量保底模式主动减少了今天的负荷。', action: skipAction })
+        return
+      }
       let slot: { date: string; start: number } | null = null
       for (let dayOffset = 0; dayOffset < targetDays && !slot; dayOffset += 1) {
         const date = shiftIsoDate(targetStart, dayOffset)
-        let cursor = scope === 'today' && dayOffset === 0
-          ? Math.max(8 * 60, Math.ceil((nowMinutes + 15) / 15) * 15)
-          : 8 * 60
-        while (cursor + duration <= 21 * 60) {
+        let cursor = scope !== 'next_week' && dayOffset === 0
+          ? Math.max(planningStart, Math.ceil((nowMinutes + 15) / 15) * 15)
+          : planningStart
+        while (cursor + duration <= planningEnd) {
           const conflict = occupied
             .filter((block) => block.date === date && cursor < block.end && cursor + duration > block.start)
             .sort((left, right) => left.end - right.end)[0]
@@ -2761,10 +2848,11 @@ export default function App() {
       }
 
       if (!slot) {
-        skipped.push({ taskId: task.id, title: task.title, reason: '未来七天没有足够长的空闲时段。' })
+        skipped.push({ taskId: task.id, title: task.title, reason: rebalancing ? '在今晚结束前没有足够长的可用时段。' : '未来七天没有足够长的空闲时段。', action: rebalancing ? skipAction : 'keep' })
         return
       }
       occupied.push({ date: slot.date, start: slot.start, end: slot.start + duration + 15 })
+      scheduledMinutes += duration
       items.push({
         taskId: task.id,
         title: task.title,
@@ -2780,12 +2868,12 @@ export default function App() {
         }],
       })
     })
-    if (items.length === 0) throw new Error('未来七天没有足够的空闲时间，请先调整现有日程。')
+    if (items.length === 0 && !rebalancing) throw new Error('未来七天没有足够的空闲时间，请先调整现有日程。')
     return {
       id: -1,
       model: 'demo',
-      summary: scope === 'next_week' ? `根据本周节奏，为下周 ${items.length} 项灵活任务留出了完整时间。` : `已为 ${items.length} 项任务留出完整时间，并在任务之间保留缓冲。`,
-      adjustments: scope === 'next_week' ? ['把最费脑力的任务放在精力更好的上午。', '午餐和晚餐前后保留缓冲，不用把一周塞满。', '每天只保留一个真正重要的重点。'] : ['先完成唯一重点，再处理低优先级任务。'],
+      summary: scope === 'next_week' ? `根据本周节奏，为下周 ${items.length} 项灵活任务留出了完整时间。` : rebalancing ? `余下今天保留 ${items.length} 项，放下 ${skipped.length} 项。` : `已为 ${items.length} 项任务留出完整时间，并在任务之间保留缓冲。`,
+      adjustments: scope === 'next_week' ? ['把最费脑力的任务放在精力更好的上午。', '午餐和晚餐前后保留缓冲，不用把一周塞满。', '每天只保留一个真正重要的重点。'] : rebalancing ? [runtime?.mode === 'low_energy' ? '今天采用低能量保底，不追赶已经错过的计划。' : '从现在重新开始，只完成现实可行的部分。'] : ['先完成唯一重点，再处理低优先级任务。'],
       items,
       skipped,
       remainingUses: 1,
@@ -2793,16 +2881,25 @@ export default function App() {
       scope,
       targetStartDate: targetStart,
       targetEndDate: shiftIsoDate(targetStart, targetDays - 1),
+      mode: runtime?.mode ?? null,
+      currentEnergy: runtime?.currentEnergy ?? null,
+      latestEnd: runtime?.latestEnd ?? null,
     }
   }
 
-  async function generateAiPlan(scope: 'today' | 'next_week' = aiPlanScope) {
+  async function generateAiPlan(scope: AiPlanScope = aiPlanScope, runtime: RebalanceInput | null = scope === 'rebalance' ? rebalanceInput : null) {
     setAiPlanScope(scope)
     setAiPlanLoading(true)
     setAiPlan(null)
     setAiPlanError('')
     try {
-      setAiPlan(demoMode ? demoAiPlan(scope) : scope === 'next_week' ? await api.createWeeklyAiPlan() : await api.createAiPlan())
+      setAiPlan(demoMode
+        ? demoAiPlan(scope, runtime ?? undefined)
+        : scope === 'next_week'
+          ? await api.createWeeklyAiPlan()
+          : scope === 'rebalance' && runtime
+            ? await api.createRebalancePlan(runtime)
+            : await api.createAiPlan())
     } catch (error) {
       setAiPlanError(error instanceof Error ? error.message : 'AI 暂时无法生成安排，请稍后再试。')
     } finally {
@@ -2816,6 +2913,18 @@ export default function App() {
     void generateAiPlan(scope)
   }
 
+  function openRebalanceSetup() {
+    setRebalanceSetupOpen(true)
+  }
+
+  function startRebalance(input: RebalanceInput) {
+    setRebalanceInput(input)
+    setRebalanceSetupOpen(false)
+    setAiPlanScope('rebalance')
+    setAiPlannerOpen(true)
+    void generateAiPlan('rebalance', input)
+  }
+
   async function applyAiPlan() {
     if (!aiPlan) return
     setAiPlanApplying(true)
@@ -2823,9 +2932,10 @@ export default function App() {
     try {
       if (demoMode) {
         const itemMap = new Map(aiPlan.items.map((item) => [item.taskId, item]))
+        const skippedMap = new Map(aiPlan.skipped.map((item) => [item.taskId, item]))
         setTasks((current) => current.map((task) => {
           const item = itemMap.get(task.id)
-          return item ? {
+          if (item) return {
             ...task,
             startAt: item.startAt,
             endAt: item.endAt,
@@ -2835,14 +2945,19 @@ export default function App() {
             priority: item.priority,
             unscheduled: false,
             status: 'planned',
-          } : task
+          }
+          const skipped = skippedMap.get(task.id)
+          if (aiPlan.scope !== 'rebalance' || !skipped || skipped.action === 'keep') return task
+          return skipped.action === 'skip'
+            ? { ...task, status: 'cancelled', skipped: true }
+            : { ...task, status: 'inbox', startAt: null, endAt: null, start: undefined, end: undefined, unscheduled: true, scheduleMode: 'flexible', scheduleBlocks: [] }
         }))
       } else {
         applyBootstrap(await api.applyAiPlan(aiPlan.id))
       }
       setAiPlannerOpen(false)
       setAiPlan(null)
-      showToast(aiPlan.scope === 'next_week' ? `下周 ${aiPlan.items.length} 项安排已写入` : `已采用 ${aiPlan.items.length} 项 AI 安排`)
+      showToast(aiPlan.scope === 'next_week' ? `下周 ${aiPlan.items.length} 项安排已写入` : aiPlan.scope === 'rebalance' ? `余下今天保留 ${aiPlan.items.length} 项，移出 ${aiPlan.skipped.filter((item) => item.action !== 'keep').length} 项` : `已采用 ${aiPlan.items.length} 项 AI 安排`)
     } catch (error) {
       setAiPlanError(error instanceof Error ? error.message : 'AI 安排保存失败，请稍后再试。')
     } finally {
@@ -3578,8 +3693,8 @@ export default function App() {
       </div>
       <div className="app-main">
         <Topbar page={page} tasks={tasks} onMenu={() => setMenuOpen(true)} onOpenTask={openTask} onOpenReminderSettings={() => navigateSettings('reminders')} />
-        {page === 'now' && <NowPage tasks={tasks} dailyRhythm={dailyRhythm} idlePermission={idlePermission} onStart={startNowTask} onPause={pauseNowTask} onComplete={completeNowTask} onDelay={delayNowTask} onSkip={skipNowTask} onOpenTask={openTask} onNavigate={navigate} />}
-        {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} dailyRhythm={dailyRhythm} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} onNavigate={navigate} onAiPlan={openAiPlanner} onOpenDailyFlow={openDailyFlow} />}
+        {page === 'now' && <NowPage tasks={tasks} dailyRhythm={dailyRhythm} idlePermission={idlePermission} onStart={startNowTask} onPause={pauseNowTask} onComplete={completeNowTask} onDelay={delayNowTask} onSkip={skipNowTask} onOpenTask={openTask} onNavigate={navigate} onRebalance={openRebalanceSetup} />}
+        {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} dailyRhythm={dailyRhythm} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} onNavigate={navigate} onRebalance={openRebalanceSetup} onOpenDailyFlow={openDailyFlow} />}
         {page === 'inbox' && <InboxPage tasks={tasks} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} onNewTask={() => setEditor({ type: 'task' })} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} />}
         {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor({ type: 'task', schedule: true })} onOpenTask={openTask} />}
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
@@ -3595,7 +3710,8 @@ export default function App() {
       {dailyFlow === 'morning' && <MorningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={saveMorningCheckin} onSkip={skipMorningCheckin} />}
       {dailyFlow === 'evening' && <EveningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={closeDailyRhythm} />}
       {completionTask && <CompletionCalibrationModal task={completionTask} onClose={() => setCompletionTaskId(null)} onSave={completeTask} />}
-      {aiPlannerOpen && <AiPlannerModal scope={aiPlanScope} plan={aiPlan} loading={aiPlanLoading} applying={aiPlanApplying} error={aiPlanError} onClose={() => setAiPlannerOpen(false)} onRetry={() => void generateAiPlan(aiPlanScope)} onApply={() => void applyAiPlan()} />}
+      {rebalanceSetupOpen && <RebalanceSetupModal tasks={tasks} dailyRhythm={dailyRhythm} settings={settings} onClose={() => setRebalanceSetupOpen(false)} onGenerate={startRebalance} />}
+      {aiPlannerOpen && <AiPlannerModal scope={aiPlanScope} plan={aiPlan} loading={aiPlanLoading} applying={aiPlanApplying} error={aiPlanError} onClose={() => setAiPlannerOpen(false)} onRetry={() => void generateAiPlan(aiPlanScope, aiPlanScope === 'rebalance' ? rebalanceInput : null)} onApply={() => void applyAiPlan()} />}
       {toast && <div className="toast"><CheckCircle2 size={17} />{toast}</div>}
       {idleWarning && <FocusIdleWarningDialog warning={idleWarning} secondsLeft={idleSecondsLeft} onContinue={dismissIdleWarning} onPause={() => void pauseForIdle(idleWarning)} />}
     </div>
