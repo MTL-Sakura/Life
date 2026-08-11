@@ -13,7 +13,7 @@ use Throwable;
 
 final class BackupManager
 {
-    public const SCHEMA_VERSION = 9;
+    public const SCHEMA_VERSION = 10;
 
     public function export(PDO $db, int $userId, string $timezone): array
     {
@@ -162,7 +162,7 @@ final class BackupManager
             $this->insertRows($db, 'tasks', (array) ($data['tasks'] ?? []), ['id', 'user_id', 'project_id', 'category_id', 'title', 'notes', 'status', 'priority', 'start_at', 'end_at', 'due_at', 'estimated_minutes', 'actual_minutes', 'is_focus', 'recurrence_rule', 'recurrence_source_task_id', 'recurrence_series_id', 'occurrence_state', 'schedule_mode', 'window_start', 'window_end', 'reminder_minutes', 'reminder_at', 'reminder_sent_at', 'completed_at', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'task_schedule_blocks', (array) ($data['scheduleBlocks'] ?? []), ['id', 'user_id', 'task_id', 'start_at', 'end_at', 'source', 'position', 'created_at'], $userId);
             $this->insertRows($db, 'subtasks', (array) ($data['subtasks'] ?? []), ['id', 'task_id', 'title', 'completed', 'position', 'created_at']);
-            $this->insertRows($db, 'focus_sessions', (array) ($data['focusSessions'] ?? []), ['id', 'user_id', 'task_id', 'status', 'planned_seconds', 'elapsed_seconds', 'started_at', 'last_resumed_at', 'ended_at', 'created_at', 'updated_at'], $userId);
+            $this->insertRows($db, 'focus_sessions', (array) ($data['focusSessions'] ?? []), ['id', 'user_id', 'task_id', 'session_type', 'status', 'planned_seconds', 'rescue_reason', 'rescue_step', 'rescue_outcome', 'elapsed_seconds', 'started_at', 'last_resumed_at', 'ended_at', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'habits', (array) ($data['habits'] ?? []), ['id', 'user_id', 'name', 'description', 'color', 'frequency_type', 'target_count', 'schedule_days', 'start_date', 'reminder_time', 'allow_makeup', 'is_active', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'habit_logs', (array) ($data['habitLogs'] ?? []), ['id', 'habit_id', 'log_date', 'status', 'note', 'completed_at', 'created_at']);
             $this->insertRows($db, 'notification_logs', (array) ($data['notifications'] ?? []), ['id', 'user_id', 'type', 'reference_key', 'sent_at', 'created_at'], $userId);

@@ -1,4 +1,4 @@
-import type { AiPlan, BackupPreview, BootstrapData, EveningDecision, Habit, MorningCheckinInput, PlanImportDocument, PlanImportResult, Project, RebalanceInput, SessionUser, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, BackupPreview, BootstrapData, EveningDecision, Habit, MorningCheckinInput, PlanImportDocument, PlanImportResult, Project, RebalanceInput, RescueInput, RescueOutcome, SessionUser, Subtask, Task, UserSettings } from './types'
 
 let csrfToken: string | null = null
 
@@ -83,6 +83,16 @@ export const api = {
 
   async focusTask(taskId: number, action: 'start' | 'pause' | 'resume' | 'end', idleSeconds = 0): Promise<Task> {
     const result = await request<{ task: Task }>(`focus.${action}`, { method: 'POST', body: { taskId, idleSeconds } })
+    return result.task
+  },
+
+  async startRescue(taskId: number, input: RescueInput): Promise<Task> {
+    const result = await request<{ task: Task }>('rescue.start', { method: 'POST', body: { taskId, ...input } })
+    return result.task
+  },
+
+  async finishRescue(taskId: number, outcome: RescueOutcome): Promise<Task> {
+    const result = await request<{ task: Task }>('rescue.finish', { method: 'POST', body: { taskId, outcome } })
     return result.task
   },
 

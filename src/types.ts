@@ -19,11 +19,24 @@ export type Subtask = {
 
 export type FocusSessionStatus = 'running' | 'paused' | 'completed'
 
+export type RescueReason = 'low_energy' | 'too_big' | 'unclear' | 'not_convenient'
+export type RescueOutcome = 'continue' | 'later'
+
+export type RescueInput = {
+  reason: RescueReason
+  step: string
+  durationMinutes: 2 | 5 | 10
+}
+
 export type FocusSession = {
   id: number
+  sessionType?: 'focus' | 'rescue'
   status: FocusSessionStatus
   plannedSeconds: number
   elapsedSeconds: number
+  rescueReason?: RescueReason | null
+  rescueStep?: string | null
+  rescueOutcome?: RescueOutcome | null
   startedAt: string
   lastResumedAt?: string | null
   endedAt?: string | null
@@ -172,6 +185,13 @@ export type ReviewSummary = {
   completedMinutes: number
   focusPlannedMinutes: number
   focusActualMinutes: number
+  rescueStarts: number
+  rescueContinued: number
+  rescueMinutes: number
+  rescueReasons: Array<{
+    reason: RescueReason
+    count: number
+  }>
   overdue: number
   dailyFocusSelected: number
   dailyFocusCompleted: number

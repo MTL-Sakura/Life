@@ -352,6 +352,45 @@ switch ($action) {
         ]);
         Http::json(['task' => findTask($db, $taskId, $userId, $timezone)]);
 
+    case 'rescue.start':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $taskId = (int) ($input['taskId'] ?? 0);
+        $reason = (string) ($input['reason'] ?? '');
+        $step = trim((string) ($input['step'] ?? ''));
+        $durationMinutes = (int) ($input['durationMinutes'] ?? 5);
+        if (!in_array($reason, ['low_energy', 'too_big', 'unclear', 'not_convenient'], true)) {
+            Http::json(['error' => '请选择现在难以开始的原因。'], 422);
+        }
+        $stepLength = function_exists('mb_strlen') ? mb_strlen($step) : strlen($step);
+        if ($stepLength < 1 || $stepLength > 255 || !in_array($durationMinutes, [2, 5, 10], true)) {
+            Http::json(['error' => '请填写 255 字以内的最小动作，并选择 2、5 或 10 分钟。'], 422);
+        }
+        $task = ownedRow($db, 'tasks', $taskId, $userId);
+        if (in_array($task['status'], ['completed', 'cancelled'], true)) {
+            Http::json(['error' => '已经结束的任务不能进入救援模式。'], 409);
+        }
+        $rescueError = startRescueSession($db, $task, $userId, $reason, $step, $durationMinutes);
+        if ($rescueError !== null) {
+            Http::json(['error' => $rescueError['message']], $rescueError['status']);
+        }
+        Http::json(['task' => findTask($db, $taskId, $userId, $timezone)], 201);
+
+    case 'rescue.finish':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $taskId = (int) ($input['taskId'] ?? 0);
+        $outcome = (string) ($input['outcome'] ?? '');
+        if (!in_array($outcome, ['continue', 'later'], true)) {
+            Http::json(['error' => '请选择继续原任务或稍后再做。'], 422);
+        }
+        $task = ownedRow($db, 'tasks', $taskId, $userId);
+        $rescueError = finishRescueSession($db, $task, $userId, $outcome);
+        if ($rescueError !== null) {
+            Http::json(['error' => $rescueError['message']], $rescueError['status']);
+        }
+        Http::json(['task' => findTask($db, $taskId, $userId, $timezone)]);
+
     case 'focus.start':
     case 'focus.pause':
     case 'focus.resume':
@@ -360,10 +399,10 @@ switch ($action) {
         $input = Http::input();
         $taskId = (int) ($input['taskId'] ?? 0);
         $task = ownedRow($db, 'tasks', $taskId, $userId);
-        if (!(bool) ($task['is_focus'] ?? false)) {
+        $focusAction = substr($action, strlen('focus.'));
+        if ($focusAction === 'start' && !(bool) ($task['is_focus'] ?? false)) {
             Http::json(['error' => '请先把这个任务设为专注任务。'], 422);
         }
-        $focusAction = substr($action, strlen('focus.'));
         $idleSeconds = $focusAction === 'pause'
             ? max(0, min(660, (int) ($input['idleSeconds'] ?? 0)))
             : 0;
@@ -1113,6 +1152,92 @@ function focusSessionMap(PDO $db, array $taskIds): array
     return $map;
 }
 
+function startRescueSession(PDO $db, array $task, int $userId, string $reason, string $step, int $durationMinutes): ?array
+{
+    $db->beginTransaction();
+    try {
+        $taskId = (int) $task['id'];
+        $session = latestFocusSession($db, $taskId, true);
+        if ($session !== null && in_array($session['status'], ['running', 'paused'], true)) {
+            $db->commit();
+            return ['message' => '这个任务已有计时，请先暂停或结束它。', 'status' => 409];
+        }
+        $other = $db->prepare("SELECT task_id FROM focus_sessions WHERE user_id = ? AND status = 'running' LIMIT 1 FOR UPDATE");
+        $other->execute([$userId]);
+        if ($other->fetchColumn() !== false) {
+            $db->commit();
+            return ['message' => '另一个任务正在计时，请先暂停或结束它。', 'status' => 409];
+        }
+        $now = gmdate('Y-m-d H:i:s');
+        $statement = $db->prepare(
+            "INSERT INTO focus_sessions
+                (user_id, task_id, session_type, status, planned_seconds, rescue_reason, rescue_step, elapsed_seconds, started_at, last_resumed_at)
+             VALUES (?, ?, 'rescue', 'running', ?, ?, ?, 0, ?, ?)"
+        );
+        $statement->execute([$userId, $taskId, $durationMinutes * 60, $reason, $step, $now, $now]);
+        $db->prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ? AND user_id = ?")
+            ->execute([$taskId, $userId]);
+        $db->commit();
+        return null;
+    } catch (Throwable $error) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $error;
+    }
+}
+
+function finishRescueSession(PDO $db, array $task, int $userId, string $outcome): ?array
+{
+    $db->beginTransaction();
+    try {
+        $taskId = (int) $task['id'];
+        $session = latestFocusSession($db, $taskId, true);
+        if ($session === null || ($session['session_type'] ?? 'focus') !== 'rescue' || !in_array($session['status'], ['running', 'paused'], true)) {
+            $db->commit();
+            return ['message' => '这个任务没有正在进行的启动救援。', 'status' => 409];
+        }
+        $now = gmdate('Y-m-d H:i:s');
+        $elapsed = $session['status'] === 'running' ? runningFocusElapsed($session) : (int) $session['elapsed_seconds'];
+        $db->prepare(
+            "UPDATE focus_sessions SET status = 'completed', rescue_outcome = ?, elapsed_seconds = ?,
+             last_resumed_at = NULL, ended_at = ? WHERE id = ?"
+        )->execute([$outcome, max(0, $elapsed), $now, (int) $session['id']]);
+
+        if ($outcome === 'continue') {
+            $db->prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ? AND user_id = ?")
+                ->execute([$taskId, $userId]);
+            if ((bool) ($task['is_focus'] ?? false)) {
+                $other = $db->prepare("SELECT task_id FROM focus_sessions WHERE user_id = ? AND task_id != ? AND status = 'running' LIMIT 1 FOR UPDATE");
+                $other->execute([$userId, $taskId]);
+                if ($other->fetchColumn() === false) {
+                    $db->prepare(
+                        "INSERT INTO focus_sessions (user_id, task_id, session_type, status, planned_seconds, elapsed_seconds, started_at, last_resumed_at)
+                         VALUES (?, ?, 'focus', 'running', ?, 0, ?, ?)"
+                    )->execute([$userId, $taskId, max(60, (int) $task['estimated_minutes'] * 60), $now, $now]);
+                }
+            }
+        } else {
+            $start = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify('+30 minutes');
+            $end = $start->modify('+' . max(1, (int) $task['estimated_minutes']) . ' minutes');
+            $reminderMinutes = $task['reminder_minutes'] === null ? null : max(0, (int) $task['reminder_minutes']);
+            $reminderAt = $reminderMinutes === null ? null : $start->modify("-{$reminderMinutes} minutes")->format('Y-m-d H:i:s');
+            $db->prepare('DELETE FROM task_schedule_blocks WHERE user_id = ? AND task_id = ?')->execute([$userId, $taskId]);
+            $db->prepare(
+                "UPDATE tasks SET status = 'planned', start_at = ?, end_at = ?, reminder_at = ?, reminder_sent_at = NULL
+                 WHERE id = ? AND user_id = ?"
+            )->execute([$start->format('Y-m-d H:i:s'), $end->format('Y-m-d H:i:s'), $reminderAt, $taskId, $userId]);
+        }
+        $db->commit();
+        return null;
+    } catch (Throwable $error) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $error;
+    }
+}
+
 function updateFocusSession(PDO $db, array $task, int $userId, string $action, int $idleSeconds = 0): ?array
 {
     $db->beginTransaction();
@@ -1502,15 +1627,29 @@ function reviewData(PDO $db, int $userId, string $weekStart, string $weekEnd, st
     }
 
     $focusStatement = $db->prepare(
-        'SELECT status, elapsed_seconds, last_resumed_at, started_at
+        'SELECT session_type, status, elapsed_seconds, last_resumed_at, started_at, rescue_reason, rescue_outcome
          FROM focus_sessions WHERE user_id = ? AND started_at >= ? AND started_at < ?'
     );
     $focusStatement->execute([$userId, $weekStart, $weekEnd]);
     $focusActualSeconds = 0;
+    $rescueStarts = 0;
+    $rescueContinued = 0;
+    $rescueSeconds = 0;
+    $rescueReasonCounts = [];
     foreach ($focusStatement->fetchAll() as $session) {
         $seconds = ($session['status'] ?? '') === 'running'
             ? runningFocusElapsed($session)
             : max(0, (int) $session['elapsed_seconds']);
+        if (($session['session_type'] ?? 'focus') === 'rescue') {
+            $rescueStarts++;
+            $rescueSeconds += $seconds;
+            $rescueContinued += (int) (($session['rescue_outcome'] ?? null) === 'continue');
+            $reason = (string) ($session['rescue_reason'] ?? '');
+            if ($reason !== '') {
+                $rescueReasonCounts[$reason] = ($rescueReasonCounts[$reason] ?? 0) + 1;
+            }
+            continue;
+        }
         $focusActualSeconds += $seconds;
         $date = reviewLocalDate($session['started_at'] ?? null, $zone);
         if ($date !== null && isset($days[$date])) {
@@ -1604,6 +1743,12 @@ function reviewData(PDO $db, int $userId, string $weekStart, string $weekEnd, st
         'reason' => (string) $reason['failure_reason'],
         'count' => (int) $reason['reason_count'],
     ], $reasonStatement->fetchAll());
+    arsort($rescueReasonCounts);
+    $rescueReasons = array_map(
+        static fn (string $reason, int $count): array => ['reason' => $reason, 'count' => $count],
+        array_keys($rescueReasonCounts),
+        array_values($rescueReasonCounts),
+    );
 
     $overdueStatement = $db->prepare("SELECT COUNT(*) FROM tasks WHERE user_id = ? AND status NOT IN ('completed', 'cancelled') AND due_at < UTC_TIMESTAMP()");
     $overdueStatement->execute([$userId]);
@@ -1623,6 +1768,10 @@ function reviewData(PDO $db, int $userId, string $weekStart, string $weekEnd, st
         'completedMinutes' => $completedMinutes,
         'focusPlannedMinutes' => $focusPlannedMinutes,
         'focusActualMinutes' => (int) round($focusActualSeconds / 60),
+        'rescueStarts' => $rescueStarts,
+        'rescueContinued' => $rescueContinued,
+        'rescueMinutes' => (int) round($rescueSeconds / 60),
+        'rescueReasons' => $rescueReasons,
         'overdue' => (int) $overdueStatement->fetchColumn(),
         'dailyFocusSelected' => $dailyFocusSelected,
         'dailyFocusCompleted' => $dailyFocusCompleted,

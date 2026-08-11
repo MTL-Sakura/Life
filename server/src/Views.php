@@ -37,9 +37,13 @@ final class Views
             'isFocus' => (bool) ($row['is_focus'] ?? false),
             'focusSession' => $focusSession === null ? null : [
                 'id' => (int) $focusSession['id'],
+                'sessionType' => $focusSession['session_type'] ?? 'focus',
                 'status' => $focusSession['status'],
                 'plannedSeconds' => (int) $focusSession['planned_seconds'],
                 'elapsedSeconds' => (int) $focusSession['elapsed_seconds'],
+                'rescueReason' => $focusSession['rescue_reason'] ?? null,
+                'rescueStep' => $focusSession['rescue_step'] ?? null,
+                'rescueOutcome' => $focusSession['rescue_outcome'] ?? null,
                 'startedAt' => self::localDate($focusSession['started_at'], $timezone)?->format(DATE_ATOM),
                 'lastResumedAt' => self::localDate($focusSession['last_resumed_at'] ?? null, $timezone)?->format(DATE_ATOM),
                 'endedAt' => self::localDate($focusSession['ended_at'] ?? null, $timezone)?->format(DATE_ATOM),

@@ -55,7 +55,7 @@ import {
 } from 'lucide-react'
 import { api } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
-import type { AiPlan, AiPlanScope, BackupPreview, BackupRecord, BootstrapData, Category, DailyRhythm, EveningDecision, FailureReason, Habit, MorningCheckinInput, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, RebalanceInput, ReviewSummary, Subtask, Task, UserSettings } from './types'
+import type { AiPlan, AiPlanScope, BackupPreview, BackupRecord, BootstrapData, Category, DailyRhythm, EveningDecision, FailureReason, Habit, MorningCheckinInput, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, RebalanceInput, RescueInput, RescueOutcome, RescueReason, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
   { key: 'now' as const, label: '现在', icon: Play },
@@ -89,6 +89,26 @@ const failureReasonLabels: Record<FailureReason, string> = {
 }
 const failureReasonOptions = Object.entries(failureReasonLabels) as Array<[FailureReason, string]>
 
+const rescueReasonLabels: Record<RescueReason, string> = {
+  low_energy: '没什么精力',
+  too_big: '任务看起来太大',
+  unclear: '不知道从哪开始',
+  not_convenient: '现在不太方便',
+}
+
+function suggestedRescueStep(task: Task, reason: RescueReason) {
+  const firstSubtask = task.subtasks?.find((subtask) => !subtask.completed)?.title.trim()
+  if (firstSubtask) return `只做第一小步：${firstSubtask}`
+  if (/sharplingo|学习|课程|阅读|笔记|复习|德语|英语/i.test(task.title)) return '打开学习页面，只完成一个最小练习'
+  if (/健身|训练|运动|拉伸|跑步/i.test(task.title)) return '换好衣服，完成第一组热身动作'
+  if (/洗漱|护肤|刷牙|洗澡/i.test(task.title)) return '先走到洗手台，完成第一步'
+  if (/火影|三角洲|永劫|游戏|日常/i.test(task.title)) return '打开游戏，只完成第一项日常'
+  if (reason === 'low_energy') return `先打开“${task.title}”需要的页面或工具`
+  if (reason === 'too_big') return `只完成“${task.title}”的第一个小步骤`
+  if (reason === 'unclear') return `写下“${task.title}”接下来唯一的一步`
+  return `准备好“${task.title}”需要的东西`
+}
+
 const defaultSettings: UserSettings = {
   displayName: 'Sakura',
   email: '',
@@ -118,6 +138,10 @@ const defaultReview: ReviewSummary = {
   completedMinutes: 0,
   focusPlannedMinutes: 0,
   focusActualMinutes: 0,
+  rescueStarts: 0,
+  rescueContinued: 0,
+  rescueMinutes: 0,
+  rescueReasons: [],
   overdue: 0,
   dailyFocusSelected: 0,
   dailyFocusCompleted: 0,
@@ -1368,7 +1392,7 @@ function TaskCheck({ task, onToggle }: { task: Task; onToggle: (id: number) => v
   )
 }
 
-function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onComplete, onDelay, onSkip, onOpenTask, onNavigate, onRebalance }: {
+function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onComplete, onDelay, onSkip, onOpenTask, onNavigate, onRebalance, onOpenRescue, onFinishRescue }: {
   tasks: Task[]
   dailyRhythm: DailyRhythm
   idlePermission: IdlePermissionState
@@ -1380,6 +1404,8 @@ function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onCompl
   onOpenTask: (id: number) => void
   onNavigate: (page: PageKey) => void
   onRebalance: () => void
+  onOpenRescue: (task: Task) => void
+  onFinishRescue: (task: Task, outcome: RescueOutcome) => Promise<void>
 }) {
   const [clock, setClock] = useState(Date.now())
   const [busy, setBusy] = useState<string | null>(null)
@@ -1391,6 +1417,8 @@ function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onCompl
     .sort((left, right) => (taskStartMinutes(left) ?? 24 * 60) - (taskStartMinutes(right) ?? 24 * 60))
     .slice(0, 4)
   const session = task?.focusSession
+  const rescueSession = session?.sessionType === 'rescue' && (session.status === 'running' || session.status === 'paused') ? session : null
+  const rescueActive = rescueSession !== null
   const runningSeconds = session?.status === 'running' && session.lastResumedAt
     ? Math.max(0, Math.floor((clock - new Date(session.lastResumedAt).getTime()) / 1000))
     : 0
@@ -1444,8 +1472,8 @@ function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onCompl
       <div className="now-layout">
         <main className="now-stage" aria-live="polite">
           <div className="now-state-line">
-            <span className={`now-state now-state-${recommendation.state}`}>{recommendation.state === 'running' ? '正在专注' : recommendation.state === 'paused' ? '已暂停' : recommendation.state === 'started' ? '正在进行' : recommendation.state === 'focus' ? '今日重点' : recommendation.state === 'overdue' ? '已经到点' : recommendation.state === 'current' ? '就是现在' : '接下来'}</span>
-            <span>{recommendation.reason}</span>
+            <span className={`now-state now-state-${rescueActive ? 'rescue' : recommendation.state}`}>{rescueActive ? '启动救援' : recommendation.state === 'running' ? '正在专注' : recommendation.state === 'paused' ? '已暂停' : recommendation.state === 'started' ? '正在进行' : recommendation.state === 'focus' ? '今日重点' : recommendation.state === 'overdue' ? '已经到点' : recommendation.state === 'current' ? '就是现在' : '接下来'}</span>
+            <span>{rescueSession ? `卡点：${rescueReasonLabels[rescueSession.rescueReason ?? 'unclear']}` : recommendation.reason}</span>
           </div>
           <div className="now-task-heading">
             <span className="now-task-color" style={{ backgroundColor: task.color }} />
@@ -1461,7 +1489,16 @@ function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onCompl
 
           {task.notes && <p className="now-task-note">{task.notes}</p>}
 
-          {task.isFocus && (
+          {rescueSession && (
+            <section className={`rescue-active-panel rescue-active-${rescueSession.status}`} aria-label="启动救援计时">
+              <div className="rescue-active-heading"><div><Sparkles size={18} /><span><small>现在只做这一小步</small><strong>{rescueSession.rescueStep}</strong></span></div><strong>{focusProgress}%</strong></div>
+              <p><strong>{formatFocusTime(elapsedSeconds)}</strong><span>/ {formatFocusTime(plannedSeconds)}</span></p>
+              <ProgressBar value={focusProgress} color={focusProgress >= 100 ? '#a1843e' : '#b96552'} />
+              <small><ShieldCheck size={13} />{focusProgress >= 100 ? '这一步已经到点，现在只决定继续还是稍后。' : idlePermission === 'granted' ? '离开检测已开启' : '救援开始时会尝试开启离开检测'}</small>
+            </section>
+          )}
+
+          {task.isFocus && !rescueActive && (
             <section className="now-focus-progress" aria-label="当前专注进度">
               <div><span>{session?.status === 'running' ? '专注中' : session?.status === 'paused' ? '专注已暂停' : '准备开始'}</span><strong>{focusProgress}%</strong></div>
               <p><strong>{formatFocusTime(elapsedSeconds)}</strong><span>/ {formatFocusTime(plannedSeconds)}</span></p>
@@ -1471,19 +1508,29 @@ function NowPage({ tasks, dailyRhythm, idlePermission, onStart, onPause, onCompl
           )}
 
           <div className="now-primary-actions">
-            {task.isFocus && session?.status === 'running' ? (
+            {rescueSession?.status === 'running' ? (
+              <button type="button" className="outline-button" disabled={busy !== null} onClick={() => void act('pause', () => onPause(task))}><Pause size={17} />暂停</button>
+            ) : rescueSession?.status === 'paused' ? (
+              <button type="button" className="outline-button" disabled={busy !== null} onClick={() => void act('resume', () => onStart(task))}><Play size={17} />继续这一步</button>
+            ) : task.isFocus && session?.status === 'running' ? (
               <button type="button" className="outline-button" disabled={busy !== null} onClick={() => void act('pause', () => onPause(task))}><Pause size={17} />暂停</button>
             ) : task.status !== 'in_progress' || task.isFocus ? (
               <button type="button" className="primary-button" disabled={busy !== null} onClick={() => void act('start', () => onStart(task))}><Play size={17} />{startLabel}</button>
             ) : null}
-            <button type="button" className="primary-button now-complete-button" disabled={busy !== null} onClick={() => void act('complete', () => onComplete(task))}><Check size={17} />完成，下一项</button>
+            {rescueActive ? <>
+              <button type="button" className="primary-button rescue-continue-button" disabled={busy !== null} onClick={() => void act('rescue-continue', () => onFinishRescue(task, 'continue'))}><Play size={17} />继续原任务</button>
+              <button type="button" className="outline-button" disabled={busy !== null} onClick={() => void act('rescue-later', () => onFinishRescue(task, 'later'))}><Clock3 size={17} />稍后 30 分钟</button>
+            </> : <>
+              <button type="button" className="outline-button rescue-open-button" disabled={busy !== null || session?.status === 'running' || session?.status === 'paused'} onClick={() => onOpenRescue(task)}><Sparkles size={17} />有点难开始</button>
+              <button type="button" className="primary-button now-complete-button" disabled={busy !== null} onClick={() => void act('complete', () => onComplete(task))}><Check size={17} />完成，下一项</button>
+            </>}
           </div>
 
-          <div className="now-secondary-actions">
+          {!rescueActive && <div className="now-secondary-actions">
             <span>稍后再做</span>
             {[15, 30, 60].map((minutes) => <button type="button" className="outline-button compact" disabled={busy !== null} onClick={() => void act(`delay-${minutes}`, () => onDelay(task, minutes))} key={minutes}>{minutes} 分钟</button>)}
             <button type="button" className="text-button now-skip-button" disabled={busy !== null} onClick={() => void act('skip', () => onSkip(task))}>{task.recurrenceRule ? '跳过今天' : '移出今天'}</button>
-          </div>
+          </div>}
         </main>
 
         <aside className="now-aside">
@@ -1574,6 +1621,68 @@ function RebalanceSetupModal({ tasks, dailyRhythm, settings, onClose, onGenerate
         {dailyRhythm.focusTaskTitle && <div className="rebalance-focus-note"><Flag size={15} /><span>今日重点：<strong>{dailyRhythm.focusTaskTitle}</strong></span></div>}
         {error && <p className="form-error">{error}</p>}
         <footer className="modal-actions"><button type="button" className="outline-button" onClick={onClose}>取消</button><button type="submit" className="primary-button"><Sparkles size={16} />生成余下方案</button></footer>
+      </form>
+    </ModalShell>
+  )
+}
+
+function RescueSetupModal({ task, onClose, onStart }: {
+  task: Task
+  onClose: () => void
+  onStart: (input: RescueInput) => Promise<void>
+}) {
+  const [reason, setReason] = useState<RescueReason | null>(null)
+  const [step, setStep] = useState('')
+  const [durationMinutes, setDurationMinutes] = useState<RescueInput['durationMinutes']>(5)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const reasons = [
+    { key: 'low_energy' as const, label: rescueReasonLabels.low_energy, detail: '把启动成本降到最低', icon: BatteryMedium },
+    { key: 'too_big' as const, label: rescueReasonLabels.too_big, detail: '只取第一小步', icon: Target },
+    { key: 'unclear' as const, label: rescueReasonLabels.unclear, detail: '先弄清唯一下一步', icon: Search },
+    { key: 'not_convenient' as const, label: rescueReasonLabels.not_convenient, detail: '先完成准备动作', icon: Clock3 },
+  ]
+
+  function chooseReason(nextReason: RescueReason) {
+    setReason(nextReason)
+    setStep(suggestedRescueStep(task, nextReason))
+    setDurationMinutes(nextReason === 'low_energy' || nextReason === 'not_convenient' ? 2 : 5)
+    setError('')
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!reason || !step.trim()) {
+      setError('先选一个卡点，并保留一个可以立刻开始的小动作。')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await onStart({ reason, step: step.trim(), durationMinutes })
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : '暂时无法开始救援计时。')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <ModalShell title="先让自己动起来" eyebrow="START RESCUE" onClose={onClose}>
+      <form className="rescue-setup" onSubmit={submit}>
+        <div className="rescue-task-summary"><span style={{ backgroundColor: task.color }} /><div><small>眼前的任务</small><strong>{task.title}</strong></div></div>
+        <fieldset className="rescue-reason-field">
+          <legend>现在卡在哪里？</legend>
+          <div className="rescue-reason-grid">
+            {reasons.map(({ key, label, detail, icon: Icon }) => <button type="button" className={reason === key ? 'active' : ''} aria-pressed={reason === key} onClick={() => chooseReason(key)} key={key}><Icon size={18} /><span><strong>{label}</strong><small>{detail}</small></span></button>)}
+          </div>
+        </fieldset>
+        {reason && <div className="rescue-step-editor">
+          <label><span>现在只做这一小步</span><input autoFocus maxLength={255} value={step} onChange={(event) => setStep(event.target.value)} /></label>
+          <fieldset><legend>先做多久？</legend><div>{([2, 5, 10] as const).map((minutes) => <button type="button" className={durationMinutes === minutes ? 'active' : ''} aria-pressed={durationMinutes === minutes} onClick={() => setDurationMinutes(minutes)} key={minutes}>{minutes} 分钟</button>)}</div></fieldset>
+        </div>}
+        <p className="rescue-reassurance">这不是缩短原任务，也不要求一次做完。先启动，时间到了再决定下一步。</p>
+        {error && <p className="form-error">{error}</p>}
+        <footer className="modal-actions"><button type="button" className="outline-button" onClick={onClose} disabled={saving}>取消</button><button type="submit" className="primary-button" disabled={saving || !reason || !step.trim()}><Play size={16} />{saving ? '启动中…' : `先做 ${durationMinutes} 分钟`}</button></footer>
       </form>
     </ModalShell>
   )
@@ -2178,6 +2287,8 @@ function ReviewPage({ summary, tasks, onAiPlan }: { summary: ReviewSummary; task
   const movedCount = summary.carryovers.tomorrow + summary.carryovers.later + summary.carryovers.drop
   const calibrationDifference = calibrationActualMinutes - calibrationEstimatedMinutes
   const mostCommonFailure = summary.failureReasons[0]
+  const mostCommonRescue = summary.rescueReasons[0]
+  const rescueContinueRate = summary.rescueStarts > 0 ? Math.round((summary.rescueContinued / summary.rescueStarts) * 100) : 0
   const maxFailureCount = Math.max(1, ...summary.failureReasons.map((reason) => reason.count))
   const energyChange = summary.averageMorningEnergy !== null && summary.averageEveningEnergy !== null
     ? Math.round((summary.averageEveningEnergy - summary.averageMorningEnergy) * 10) / 10
@@ -2229,6 +2340,14 @@ function ReviewPage({ summary, tasks, onAiPlan }: { summary: ReviewSummary; task
         <div><Archive size={18} /><span>留到以后</span><strong>{summary.carryovers.later}</strong></div>
         <div><Trash2 size={18} /><span>跳过或放弃</span><strong>{summary.carryovers.drop}</strong></div>
       </section>
+      {summary.rescueStarts > 0 && <section className="content-section rescue-review-section">
+        <div className="section-title-row"><div><h2>启动救援</h2><span>不是逼自己做完，只看有没有重新动起来</span></div><span>{summary.rescueStarts} 次使用</span></div>
+        <div className="rescue-review-metrics">
+          <div><Sparkles size={18} /><span>重新开始</span><strong>{summary.rescueContinued}</strong><small>{rescueContinueRate}% 选择继续原任务</small></div>
+          <div><Clock3 size={18} /><span>最小动作</span><strong>{summary.rescueMinutes}m</strong><small>救援阶段真实投入</small></div>
+          <div><BatteryMedium size={18} /><span>最常卡点</span><strong>{mostCommonRescue ? rescueReasonLabels[mostCommonRescue.reason] : '暂无'}</strong><small>{mostCommonRescue ? `${mostCommonRescue.count} 次记录` : '继续使用后会形成趋势'}</small></div>
+        </div>
+      </section>}
       <section className="content-section plan-calibration-section">
         <div className="section-title-row"><div><h2>计划校准</h2><span>预计与实际，以及阻碍发生在哪里</span></div><span>{calibrationSamples} 项有效记录</span></div>
         {calibrationSamples > 0 || summary.failureReasons.length > 0 ? <div className="calibration-review-layout">
@@ -2656,6 +2775,7 @@ export default function App() {
   const [dailyRhythm, setDailyRhythm] = useState<DailyRhythm>(() => emptyDailyRhythm())
   const [dailyFlow, setDailyFlow] = useState<'morning' | 'evening' | null>(null)
   const [completionTaskId, setCompletionTaskId] = useState<number | null>(null)
+  const [rescueTaskId, setRescueTaskId] = useState<number | null>(null)
   const [editor, setEditor] = useState<EditorState>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [quickEntry, setQuickEntry] = useState('')
@@ -2681,6 +2801,7 @@ export default function App() {
   const inboxCount = useMemo(() => tasks.filter((task) => !task.completed && task.unscheduled).length, [tasks])
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId), [selectedTaskId, tasks])
   const completionTask = useMemo(() => tasks.find((task) => task.id === completionTaskId), [completionTaskId, tasks])
+  const rescueTask = useMemo(() => tasks.find((task) => task.id === rescueTaskId), [rescueTaskId, tasks])
   const runningFocusTask = useMemo(() => tasks.find((task) => task.focusSession?.status === 'running') ?? null, [tasks])
   const editorTask = editor?.type === 'task' && editor.taskId
     ? tasks.find((task) => task.id === editor.taskId)
@@ -3080,18 +3201,110 @@ export default function App() {
   }
 
   async function startNowTask(task: Task) {
-    if (task.isFocus) {
+    const resumingRescue = task.focusSession?.sessionType === 'rescue' && task.focusSession.status === 'paused'
+    if (resumingRescue) {
+      if (!await focusTask(task.id, 'resume')) return
+    } else if (task.isFocus) {
       const action: FocusAction = task.focusSession?.status === 'paused' ? 'resume' : 'start'
       if (!await focusTask(task.id, action)) return
     }
     if (await updateExecutionTask(task, { status: 'in_progress' })) {
-      showToast(task.isFocus ? '专注开始，只做这一件' : '已经开始，做完再看下一项')
+      showToast(resumingRescue ? '继续这一小步，不用想后面的事' : task.isFocus ? '专注开始，只做这一件' : '已经开始，做完再看下一项')
     }
   }
 
   async function pauseNowTask(task: Task) {
-    if (!task.isFocus || task.focusSession?.status !== 'running') return
-    if (await focusTask(task.id, 'pause')) showToast('专注已暂停，时间会保留')
+    if (task.focusSession?.status !== 'running' || (!task.isFocus && task.focusSession.sessionType !== 'rescue')) return
+    if (await focusTask(task.id, 'pause')) showToast(task.focusSession.sessionType === 'rescue' ? '这一小步已暂停，时间会保留' : '专注已暂停，时间会保留')
+  }
+
+  async function startRescue(input: RescueInput) {
+    const task = tasks.find((item) => item.id === rescueTaskId)
+    if (!task) throw new Error('当前任务已经变化，请重新打开救援模式。')
+    await prepareFocusPresenceDetection()
+    if (!demoMode) {
+      const updated = await api.startRescue(task.id, input)
+      setTasks((current) => current.map((item) => item.id === task.id ? updated : item))
+    } else {
+      const timestamp = new Date().toISOString()
+      setTasks((current) => current.map((item) => item.id === task.id ? {
+        ...item,
+        status: 'in_progress',
+        focusSession: {
+          id: Date.now(),
+          sessionType: 'rescue',
+          status: 'running',
+          plannedSeconds: input.durationMinutes * 60,
+          elapsedSeconds: 0,
+          rescueReason: input.reason,
+          rescueStep: input.step,
+          rescueOutcome: null,
+          startedAt: timestamp,
+          lastResumedAt: timestamp,
+        },
+      } : item))
+    }
+    setRescueTaskId(null)
+    showToast(`先做 ${input.durationMinutes} 分钟，只完成这一小步`)
+  }
+
+  async function finishRescue(task: Task, outcome: RescueOutcome) {
+    if (!demoMode) {
+      const updated = await api.finishRescue(task.id, outcome)
+      setTasks((current) => current.map((item) => item.id === task.id ? updated : item))
+      void api.bootstrap().then((data) => setReview(data.review)).catch(() => undefined)
+    } else {
+      const timestamp = new Date().toISOString()
+      const nowMinutes = berlinClockMinutes()
+      setTasks((current) => current.map((item) => {
+        if (item.id !== task.id || item.focusSession?.sessionType !== 'rescue') return item
+        const session = item.focusSession
+        const runningDelta = session.status === 'running' && session.lastResumedAt
+          ? Math.max(0, Math.floor((Date.now() - new Date(session.lastResumedAt).getTime()) / 1000))
+          : 0
+        if (outcome === 'continue') {
+          return {
+            ...item,
+            status: 'in_progress',
+            focusSession: item.isFocus ? {
+              id: Date.now(),
+              sessionType: 'focus',
+              status: 'running',
+              plannedSeconds: item.duration * 60,
+              elapsedSeconds: 0,
+              startedAt: timestamp,
+              lastResumedAt: timestamp,
+            } : {
+              ...session,
+              status: 'completed',
+              rescueOutcome: 'continue',
+              elapsedSeconds: session.elapsedSeconds + runningDelta,
+              lastResumedAt: null,
+              endedAt: timestamp,
+            },
+          }
+        }
+        const startAt = localDateTime(berlinIsoDate(), nowMinutes + 30)
+        return {
+          ...item,
+          status: 'planned',
+          startAt,
+          endAt: localDateTime(berlinIsoDate(), nowMinutes + 30 + item.duration),
+          start: startAt.slice(11, 16),
+          end: localDateTime(berlinIsoDate(), nowMinutes + 30 + item.duration).slice(11, 16),
+          scheduleBlocks: [],
+          focusSession: {
+            ...session,
+            status: 'completed',
+            rescueOutcome: 'later',
+            elapsedSeconds: session.elapsedSeconds + runningDelta,
+            lastResumedAt: null,
+            endedAt: timestamp,
+          },
+        }
+      }))
+    }
+    showToast(outcome === 'continue' ? '已经启动，继续原任务' : '先放一放，30 分钟后再回来')
   }
 
   async function completeNowTask(task: Task) {
@@ -3192,7 +3405,7 @@ export default function App() {
         ? Math.max(0, Math.floor((Date.now() - new Date(session.lastResumedAt).getTime()) / 1000))
         : 0
       if (action === 'start' && (!session || session.status === 'completed')) {
-        return { ...item, focusSession: { id: Date.now(), status: 'running', plannedSeconds: item.duration * 60, elapsedSeconds: 0, startedAt: timestamp, lastResumedAt: timestamp } }
+        return { ...item, focusSession: { id: Date.now(), sessionType: 'focus', status: 'running', plannedSeconds: item.duration * 60, elapsedSeconds: 0, startedAt: timestamp, lastResumedAt: timestamp } }
       }
       if (!session || session.status === 'completed') return item
       if (action === 'pause' && session.status === 'running') {
@@ -3693,7 +3906,7 @@ export default function App() {
       </div>
       <div className="app-main">
         <Topbar page={page} tasks={tasks} onMenu={() => setMenuOpen(true)} onOpenTask={openTask} onOpenReminderSettings={() => navigateSettings('reminders')} />
-        {page === 'now' && <NowPage tasks={tasks} dailyRhythm={dailyRhythm} idlePermission={idlePermission} onStart={startNowTask} onPause={pauseNowTask} onComplete={completeNowTask} onDelay={delayNowTask} onSkip={skipNowTask} onOpenTask={openTask} onNavigate={navigate} onRebalance={openRebalanceSetup} />}
+        {page === 'now' && <NowPage tasks={tasks} dailyRhythm={dailyRhythm} idlePermission={idlePermission} onStart={startNowTask} onPause={pauseNowTask} onComplete={completeNowTask} onDelay={delayNowTask} onSkip={skipNowTask} onOpenTask={openTask} onNavigate={navigate} onRebalance={openRebalanceSetup} onOpenRescue={(task) => setRescueTaskId(task.id)} onFinishRescue={finishRescue} />}
         {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} dailyRhythm={dailyRhythm} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} onNavigate={navigate} onRebalance={openRebalanceSetup} onOpenDailyFlow={openDailyFlow} />}
         {page === 'inbox' && <InboxPage tasks={tasks} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} onNewTask={() => setEditor({ type: 'task' })} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} />}
         {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor({ type: 'task', schedule: true })} onOpenTask={openTask} />}
@@ -3710,6 +3923,7 @@ export default function App() {
       {dailyFlow === 'morning' && <MorningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={saveMorningCheckin} onSkip={skipMorningCheckin} />}
       {dailyFlow === 'evening' && <EveningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={closeDailyRhythm} />}
       {completionTask && <CompletionCalibrationModal task={completionTask} onClose={() => setCompletionTaskId(null)} onSave={completeTask} />}
+      {rescueTask && <RescueSetupModal task={rescueTask} onClose={() => setRescueTaskId(null)} onStart={startRescue} />}
       {rebalanceSetupOpen && <RebalanceSetupModal tasks={tasks} dailyRhythm={dailyRhythm} settings={settings} onClose={() => setRebalanceSetupOpen(false)} onGenerate={startRebalance} />}
       {aiPlannerOpen && <AiPlannerModal scope={aiPlanScope} plan={aiPlan} loading={aiPlanLoading} applying={aiPlanApplying} error={aiPlanError} onClose={() => setAiPlannerOpen(false)} onRetry={() => void generateAiPlan(aiPlanScope, aiPlanScope === 'rebalance' ? rebalanceInput : null)} onApply={() => void applyAiPlan()} />}
       {toast && <div className="toast"><CheckCircle2 size={17} />{toast}</div>}
