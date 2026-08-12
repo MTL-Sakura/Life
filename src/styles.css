@@ -2371,9 +2371,9 @@ p {
 
 .habit-table-head,
 .habit-table-row {
-  min-width: 790px;
+  min-width: 830px;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) repeat(7, 56px) 64px;
+  grid-template-columns: minmax(180px, 1fr) repeat(7, 56px) 64px 36px;
   align-items: center;
 }
 
@@ -2420,13 +2420,26 @@ p {
   border-radius: 3px;
 }
 
-.habit-name div {
+.habit-name-button {
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
+  overflow: hidden;
+  border: 0;
+  padding: 4px 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
 }
 
 .habit-name strong {
+  max-width: 100%;
+  overflow: hidden;
   font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .habit-name small {
@@ -2463,6 +2476,10 @@ p {
   color: var(--green);
   font-size: 10px;
   font-weight: 700;
+}
+
+.habit-manage-button {
+  justify-self: center;
 }
 
 .habit-footer-actions {
@@ -4794,6 +4811,163 @@ p {
 }
 
 .project-task-list small {
+  color: var(--subtle);
+  font-size: 8px;
+}
+
+.habit-detail {
+  padding: 22px;
+}
+
+.habit-detail-overview {
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.habit-detail-symbol {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 7px;
+}
+
+.habit-detail-overview > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.habit-detail-overview span:not(.habit-detail-symbol) {
+  color: var(--subtle);
+  font-size: 8px;
+}
+
+.habit-detail-overview strong {
+  font-size: 12px;
+}
+
+.habit-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--line);
+}
+
+.habit-detail-meta > div {
+  min-width: 0;
+  min-height: 76px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-content: center;
+  gap: 5px 7px;
+  padding: 12px;
+  background: rgba(251, 250, 247, 0.96);
+}
+
+.habit-detail-meta svg {
+  grid-row: 1 / 3;
+  color: var(--green);
+}
+
+.habit-detail-meta span {
+  color: var(--subtle);
+  font-size: 8px;
+}
+
+.habit-detail-meta strong {
+  font-size: 10px;
+}
+
+.habit-detail-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.habit-detail-week > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  color: var(--subtle);
+}
+
+.habit-detail-week > div > span {
+  width: 29px;
+  height: 29px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--line-strong);
+  border-radius: 50%;
+  font-size: 8px;
+}
+
+.habit-detail-week > div.planned > span {
+  border-style: solid;
+  color: var(--ink);
+}
+
+.habit-detail-week > div.checked > span {
+  border-color: var(--green);
+  color: #fff;
+  background: var(--green);
+}
+
+.habit-detail-week small {
+  font-size: 7px;
+}
+
+.habit-makeup-field,
+.habit-makeup-field > div,
+.habit-makeup-field > div > span {
+  display: flex;
+  align-items: center;
+}
+
+.habit-makeup-field {
+  min-height: 54px;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  padding: 9px 12px;
+  background: rgba(251, 250, 247, 0.72);
+}
+
+.habit-makeup-field > div {
+  min-width: 0;
+  gap: 9px;
+}
+
+.habit-makeup-field svg {
+  flex: 0 0 auto;
+  color: var(--green);
+}
+
+.habit-makeup-field > div > span {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.habit-makeup-field strong {
+  font-size: 9px;
+}
+
+.habit-makeup-field small {
   color: var(--subtle);
   font-size: 8px;
 }

@@ -275,7 +275,7 @@ const focusIdleConfirmationSeconds = 60
 type EditorState =
   | { type: 'task'; taskId?: number; schedule?: boolean }
   | { type: 'project'; projectId?: number }
-  | { type: 'habit' }
+  | { type: 'habit'; habitId?: number }
   | null
 
 type SettingsSectionKey = 'account' | 'reminders' | 'schedule' | 'data'
@@ -511,7 +511,14 @@ function calendarOccurrences(tasks: Task[], dates: string[]) {
       })
     }
   }
-  return occurrences
+  return occurrences.sort((left, right) => {
+    const dateOrder = left.date.localeCompare(right.date)
+    if (dateOrder !== 0) return dateOrder
+    const timeOrder = (left.time ?? '99:99').localeCompare(right.time ?? '99:99')
+    if (timeOrder !== 0) return timeOrder
+    const endOrder = (left.endTime ?? '99:99').localeCompare(right.endTime ?? '99:99')
+    return endOrder !== 0 ? endOrder : left.key.localeCompare(right.key)
+  })
 }
 
 function taskReviewDate(task: Task) {
@@ -1348,22 +1355,27 @@ function ProjectDetail({ project, tasks, onClose, onEdit, onDelete, onOpenTask }
   )
 }
 
-function HabitEditor({ onClose, onSave }: { onClose: () => void; onSave: (habit: Partial<Habit> & { name: string }) => Promise<void> }) {
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [frequencyType, setFrequencyType] = useState<'daily' | 'weekly' | 'custom'>('daily')
-  const [targetCount, setTargetCount] = useState(1)
-  const [scheduleDays, setScheduleDays] = useState([1, 2, 3, 4, 5, 6, 7])
-  const [color, setColor] = useState(palette[0])
+function HabitEditor({ habit, onClose, onSave }: { habit?: Habit; onClose: () => void; onSave: (habit: Partial<Habit> & { id?: number; name: string }) => Promise<void> }) {
+  const [name, setName] = useState(habit?.name ?? '')
+  const [description, setDescription] = useState(habit?.description ?? '')
+  const [frequencyType, setFrequencyType] = useState<'daily' | 'weekly' | 'custom'>(habit?.frequencyType ?? 'daily')
+  const [targetCount, setTargetCount] = useState(habit?.targetCount ?? 1)
+  const [scheduleDays, setScheduleDays] = useState(habit?.scheduleDays?.length ? habit.scheduleDays : [1, 2, 3, 4, 5, 6, 7])
+  const [color, setColor] = useState(habit?.color ?? palette[0])
+  const [allowMakeup, setAllowMakeup] = useState(habit?.allowMakeup ?? true)
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (!name.trim()) return
+    if (!name.trim() || scheduleDays.length === 0) return
     setSaving(true)
+    setError('')
     try {
-      await onSave({ name: name.trim(), description: description.trim(), frequencyType, targetCount, scheduleDays, color, allowMakeup: true })
+      await onSave({ id: habit?.id, name: name.trim(), description: description.trim(), frequencyType, targetCount, scheduleDays, color, allowMakeup })
       onClose()
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '习惯保存失败')
     } finally {
       setSaving(false)
     }
@@ -1374,7 +1386,7 @@ function HabitEditor({ onClose, onSave }: { onClose: () => void; onSave: (habit:
   }
 
   return (
-    <ModalShell title="新建习惯" eyebrow="HABIT" onClose={onClose}>
+    <ModalShell title={habit ? '编辑习惯' : '新建习惯'} eyebrow="HABIT" onClose={onClose}>
       <form className="editor-form" onSubmit={submit}>
         <label><span>习惯名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：晚饭后散步" /></label>
         <label><span>目标说明</span><input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="例如：20 分钟" /></label>
@@ -1383,9 +1395,46 @@ function HabitEditor({ onClose, onSave }: { onClose: () => void; onSave: (habit:
           <label><span>每周目标次数</span><input type="number" min="1" max="7" value={targetCount} onChange={(event) => setTargetCount(Number(event.target.value))} /></label>
           <fieldset className="color-field full"><legend>进行日</legend><div className="day-selector">{weekDays.map((day, index) => <button type="button" className={scheduleDays.includes(index + 1) ? 'active' : ''} onClick={() => toggleDay(index + 1)} key={day}>周{day}</button>)}</div></fieldset>
           <fieldset className="color-field full"><legend>颜色</legend><div className="color-swatches">{palette.map((item) => <button type="button" className={color === item ? 'active' : ''} style={{ backgroundColor: item }} onClick={() => setColor(item)} aria-label={`选择颜色 ${item}`} key={item} />)}</div></fieldset>
+          <div className="habit-makeup-field full"><div><CalendarRange size={17} /><span><strong>允许补签</strong><small>可以修改本周过去日期的记录</small></span></div><Toggle checked={allowMakeup} onChange={() => setAllowMakeup((value) => !value)} /></div>
         </div>
-        <footer className="modal-actions"><button type="button" className="outline-button" onClick={onClose}>取消</button><button type="submit" className="primary-button" disabled={saving || !name.trim()}>{saving ? '保存中…' : '创建习惯'}</button></footer>
+        {scheduleDays.length === 0 && <p className="form-error">至少选择一个进行日。</p>}
+        {error && <p className="form-error">{error}</p>}
+        <footer className="modal-actions"><button type="button" className="outline-button" onClick={onClose}>取消</button><button type="submit" className="primary-button" disabled={saving || !name.trim() || scheduleDays.length === 0}>{saving ? '保存中…' : habit ? '保存修改' : '创建习惯'}</button></footer>
       </form>
+    </ModalShell>
+  )
+}
+
+function HabitDetail({ habit, onClose, onEdit, onDelete }: { habit: Habit; onClose: () => void; onEdit: () => void; onDelete: () => Promise<void> }) {
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState('')
+  const completedThisWeek = habit.checked.filter(Boolean).length
+  const plannedDays = habit.scheduleDays?.length ? habit.scheduleDays : [1, 2, 3, 4, 5, 6, 7]
+  const weeklyTarget = habit.frequencyType === 'weekly' ? habit.targetCount ?? plannedDays.length : plannedDays.length
+
+  async function remove() {
+    setDeleting(true)
+    setError('')
+    try {
+      await onDelete()
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : '习惯删除失败')
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <ModalShell title={habit.name} eyebrow="HABIT DETAIL" onClose={onClose}>
+      <div className="habit-detail">
+        <section className="habit-detail-overview"><span className="habit-detail-symbol" style={{ color: habit.color, backgroundColor: `${habit.color}18` }}><Target size={20} /></span><div><span>{habit.detail}</span><strong>{completedThisWeek}/{weeklyTarget} 本周完成</strong></div></section>
+        <section className="habit-detail-meta"><div><TrendingUp size={17} /><span>连续记录</span><strong>{habit.streak} 天</strong></div><div><CheckCircle2 size={17} /><span>本周打卡</span><strong>{completedThisWeek} 次</strong></div><div><CalendarRange size={17} /><span>进行日</span><strong>{plannedDays.length} 天</strong></div></section>
+        {habit.description && <section className="task-detail-section"><h3>目标说明</h3><p>{habit.description}</p></section>}
+        <section className="task-detail-section"><div className="task-detail-heading"><h3>本周记录</h3><span>{habit.allowMakeup === false ? '不允许补签' : '允许补签'}</span></div><div className="habit-detail-week">{weekDays.map((day, index) => <div className={`${plannedDays.includes(index + 1) ? 'planned' : ''} ${habit.checked[index] ? 'checked' : ''}`} key={day}><span>{habit.checked[index] ? <Check size={14} /> : day}</span><small>周{day}</small></div>)}</div></section>
+        {confirmDelete && <div className="delete-confirm" role="alert"><div><strong>删除“{habit.name}”？</strong><span>该习惯的全部打卡历史和连续天数都会永久删除。</span></div><button type="button" className="outline-button" onClick={() => setConfirmDelete(false)}>取消</button><button type="button" className="danger-button" onClick={() => void remove()} disabled={deleting}>{deleting ? '删除中…' : '确认删除'}</button></div>}
+        {error && <p className="form-error">{error}</p>}
+        <footer className="task-detail-actions"><button type="button" className="icon-button task-delete-button" onClick={() => setConfirmDelete(true)} aria-label="删除习惯" title="删除习惯"><Trash2 size={17} /></button><button type="button" className="primary-button" onClick={onEdit}><Pencil size={16} /> 编辑习惯</button></footer>
+      </div>
     </ModalShell>
   )
 }
@@ -2377,7 +2426,7 @@ function ProjectsPage({ projects, onNewProject, onOpenProject }: { projects: Pro
   )
 }
 
-function HabitsPage({ habits, toggleHabit, onNewHabit }: { habits: Habit[]; toggleHabit: (id: number, day: number) => void; onNewHabit: () => void }) {
+function HabitsPage({ habits, toggleHabit, onNewHabit, onOpenHabit }: { habits: Habit[]; toggleHabit: (id: number, day: number) => void; onNewHabit: () => void; onOpenHabit: (id: number) => void }) {
   const dates = currentWeekDates()
   const todayIndex = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)).indexOf(berlinIsoDate())
   const completed = habits.reduce((sum, habit) => sum + habit.checked.filter(Boolean).length, 0)
@@ -2401,10 +2450,11 @@ function HabitsPage({ habits, toggleHabit, onNewHabit }: { habits: Habit[]; togg
           <span>习惯</span>
           {weekDays.map((day, index) => <span className={index === todayIndex ? 'today' : ''} key={day}>周{day}<strong>{dates[index]}</strong></span>)}
           <span>连续</span>
+          <span aria-hidden="true" />
         </div>
         {habits.map((habit) => (
           <div className="habit-table-row" key={habit.id}>
-            <div className="habit-name"><span style={{ backgroundColor: habit.color }} /><div><strong>{habit.name}</strong><small>{habit.detail}</small></div></div>
+            <div className="habit-name"><span style={{ backgroundColor: habit.color }} /><button type="button" className="habit-name-button" onClick={() => onOpenHabit(habit.id)}><strong>{habit.name}</strong><small>{habit.detail}</small></button></div>
             {habit.checked.map((checked, index) => (
               <button
                 type="button"
@@ -2418,6 +2468,7 @@ function HabitsPage({ habits, toggleHabit, onNewHabit }: { habits: Habit[]; togg
               </button>
             ))}
             <span className="streak-count">{habit.streak} 天</span>
+            <button type="button" className="row-action habit-manage-button" onClick={() => onOpenHabit(habit.id)} aria-label={`管理习惯 ${habit.name}`} title="查看、编辑或删除习惯"><MoreHorizontal size={18} /></button>
           </div>
         ))}
         {habits.length === 0 && <p className="empty-copy habit-empty">还没有习惯记录。</p>}
@@ -3096,6 +3147,7 @@ export default function App() {
   const [editor, setEditor] = useState<EditorState>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null)
+  const [selectedHabitId, setSelectedHabitId] = useState<number | null>(null)
   const [quickEntry, setQuickEntry] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [toast, setToast] = useState('')
@@ -3119,6 +3171,7 @@ export default function App() {
   const inboxCount = useMemo(() => tasks.filter((task) => !task.completed && task.unscheduled).length, [tasks])
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId), [selectedTaskId, tasks])
   const selectedProject = useMemo(() => projectItems.find((project) => project.id === selectedProjectId), [projectItems, selectedProjectId])
+  const selectedHabit = useMemo(() => habits.find((habit) => habit.id === selectedHabitId), [habits, selectedHabitId])
   const completionTask = useMemo(() => tasks.find((task) => task.id === completionTaskId), [completionTaskId, tasks])
   const rescueTask = useMemo(() => tasks.find((task) => task.id === rescueTaskId), [rescueTaskId, tasks])
   const runningFocusTask = useMemo(() => tasks.find((task) => task.focusSession?.status === 'running') ?? null, [tasks])
@@ -3127,6 +3180,9 @@ export default function App() {
     : undefined
   const editorProject = editor?.type === 'project' && editor.projectId
     ? projectItems.find((project) => project.id === editor.projectId)
+    : undefined
+  const editorHabit = editor?.type === 'habit' && editor.habitId
+    ? habits.find((habit) => habit.id === editor.habitId)
     : undefined
 
   useEffect(() => {
@@ -3954,6 +4010,11 @@ export default function App() {
   async function toggleHabit(id: number, day: number) {
     const currentHabit = habits.find((habit) => habit.id === id)
     if (!currentHabit) return
+    const todayIndex = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)).indexOf(berlinIsoDate())
+    if (day < todayIndex && currentHabit.allowMakeup === false) {
+      showToast('这个习惯没有开启补签')
+      return
+    }
     const checked = !currentHabit.checked[day]
     setHabits((current) => current.map((habit) => {
       if (habit.id !== id) return habit
@@ -4335,26 +4396,46 @@ export default function App() {
     showToast('项目已删除，关联任务已移到未分类')
   }
 
-  async function saveHabit(draft: Partial<Habit> & { name: string }) {
+  async function saveHabit(draft: Partial<Habit> & { id?: number; name: string }) {
     if (!demoMode) {
-      applyBootstrap(await api.createHabit(draft))
-      showToast('习惯已创建')
+      applyBootstrap(draft.id
+        ? await api.updateHabit(draft as Partial<Habit> & { id: number; name: string })
+        : await api.createHabit(draft))
+      showToast(draft.id ? '习惯已更新' : '习惯已创建')
       return
     }
-    setHabits((current) => [...current, {
-      id: Date.now(),
+    const existing = draft.id ? habits.find((habit) => habit.id === draft.id) : undefined
+    const saved: Habit = {
+      ...existing,
+      id: existing?.id ?? Date.now(),
       name: draft.name,
       description: draft.description,
-      detail: draft.frequencyType === 'weekly' ? `每周 ${draft.targetCount ?? 1} 次` : '每天',
+      detail: draft.frequencyType === 'weekly' ? `每周 ${draft.targetCount ?? 1} 次` : draft.frequencyType === 'custom' ? '自定义频率' : '每天',
       color: draft.color ?? '#496d5b',
-      streak: 0,
-      checked: [false, false, false, false, false, false, false],
+      streak: existing?.streak ?? 0,
+      checked: existing?.checked ?? [false, false, false, false, false, false, false],
       frequencyType: draft.frequencyType,
       targetCount: draft.targetCount,
       scheduleDays: draft.scheduleDays,
-      allowMakeup: true,
-    }])
-    showToast('习惯已创建')
+      allowMakeup: draft.allowMakeup ?? true,
+    }
+    setHabits((current) => existing ? current.map((habit) => habit.id === existing.id ? saved : habit) : [...current, saved])
+    showToast(existing ? '习惯已更新' : '习惯已创建')
+  }
+
+  async function deleteHabit(id: number) {
+    if (!demoMode) {
+      try {
+        applyBootstrap(await api.deleteHabit(id))
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : '习惯删除失败')
+        throw error
+      }
+    } else {
+      setHabits((current) => current.filter((habit) => habit.id !== id))
+    }
+    setSelectedHabitId(null)
+    showToast('习惯及其打卡历史已删除')
   }
 
   function navigate(next: PageKey) {
@@ -4399,16 +4480,17 @@ export default function App() {
         {page === 'inbox' && <InboxPage tasks={tasks} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} onNewTask={() => setEditor({ type: 'task' })} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} />}
         {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor({ type: 'task', schedule: true })} onOpenTask={openTask} />}
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} onOpenProject={setSelectedProjectId} />}
-        {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} />}
+        {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} onOpenHabit={setSelectedHabitId} />}
         {page === 'review' && <ReviewPage summary={review} tasks={tasks} onAiPlan={() => openAiPlanner('next_week')} />}
         {page === 'settings' && <SettingsPage settings={settings} browserPush={browserPush} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} backups={backups} onSectionChange={navigateSettings} onSave={saveSettings} onEnablePush={enableBrowserPush} onDisablePush={disableBrowserPush} onTestPush={testBrowserPush} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onClearTasksAndHabits={clearTasksAndHabits} onCreateBackup={createBackup} onPreviewBackup={previewBackup} onPreviewStoredBackup={previewStoredBackup} onRestoreBackup={restoreBackup} onRestoreStoredBackup={restoreStoredBackup} onDownloadStoredBackup={downloadStoredBackup} onDeleteStoredBackup={deleteStoredBackup} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
       {selectedTask && <TaskDetail task={selectedTask} idlePermission={idlePermission} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onStart={() => startNowTask(selectedTask)} onComplete={() => { setSelectedTaskId(null); setCompletionTaskId(selectedTask.id) }} onSnooze={(minutes) => snoozeTaskReminder(selectedTask, minutes)} onRescue={() => { setSelectedTaskId(null); setRescueTaskId(selectedTask.id) }} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} onSkipOccurrence={() => skipRecurringTask(selectedTask.id)} onPauseSeries={(date) => pauseRecurringTask(selectedTask.id, date)} />}
       {selectedProject && <ProjectDetail project={selectedProject} tasks={tasks} onClose={() => setSelectedProjectId(null)} onEdit={() => { setSelectedProjectId(null); setEditor({ type: 'project', projectId: selectedProject.id }) }} onDelete={() => deleteProject(selectedProject.id)} onOpenTask={(id) => { setSelectedProjectId(null); openTask(id) }} />}
+      {selectedHabit && <HabitDetail habit={selectedHabit} onClose={() => setSelectedHabitId(null)} onEdit={() => { setSelectedHabitId(null); setEditor({ type: 'habit', habitId: selectedHabit.id }) }} onDelete={() => deleteHabit(selectedHabit.id)} />}
       {editor?.type === 'task' && <TaskEditor task={editorTask} schedule={editor.schedule} projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}
       {editor?.type === 'project' && <ProjectEditor project={editorProject} onClose={() => setEditor(null)} onSave={saveProject} />}
-      {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}
+      {editor?.type === 'habit' && <HabitEditor habit={editorHabit} onClose={() => setEditor(null)} onSave={saveHabit} />}
       {dailyFlow === 'morning' && !selectedTask && <MorningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={saveMorningCheckin} onSkip={skipMorningCheckin} />}
       {dailyFlow === 'evening' && !selectedTask && <EveningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={closeDailyRhythm} />}
       {completionTask && <CompletionCalibrationModal task={completionTask} onClose={() => setCompletionTaskId(null)} onSave={completeTask} />}

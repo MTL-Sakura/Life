@@ -629,21 +629,85 @@ switch ($action) {
             validColor((string) ($input['color'] ?? '#496d5b')),
             validFrequency((string) ($input['frequencyType'] ?? 'daily')),
             max(1, min(7, (int) ($input['targetCount'] ?? 1))),
-            json_encode($input['scheduleDays'] ?? [1, 2, 3, 4, 5, 6, 7], JSON_THROW_ON_ERROR),
+            json_encode(normalizedScheduleDays($input['scheduleDays'] ?? null), JSON_THROW_ON_ERROR),
             $localToday->format('Y-m-d'),
-            nullableString($input['reminderTime'] ?? null),
+            validTime(nullableString($input['reminderTime'] ?? null)),
             array_key_exists('allowMakeup', $input) ? (int) (bool) $input['allowMakeup'] : 1,
         ]);
         Http::json(bootstrapData($db, $userId, $timezone), 201);
+
+    case 'habits.update':
+        Http::requireMethod('PATCH', 'POST');
+        $input = Http::input();
+        $habitId = (int) ($input['id'] ?? 0);
+        $current = ownedRow($db, 'habits', $habitId, $userId);
+        $name = trim((string) ($input['name'] ?? $current['name']));
+        if ($name === '') {
+            Http::json(['error' => '习惯名称不能为空。'], 422);
+        }
+        $reminderTime = array_key_exists('reminderTime', $input)
+            ? validTime(nullableString($input['reminderTime']))
+            : nullableString($current['reminder_time'] ?? null);
+        $db->prepare(
+            'UPDATE habits SET name = ?, description = ?, color = ?, frequency_type = ?, target_count = ?, schedule_days = ?, reminder_time = ?, allow_makeup = ? WHERE id = ? AND user_id = ?'
+        )->execute([
+            $name,
+            trim((string) ($input['description'] ?? $current['description'] ?? '')),
+            validColor((string) ($input['color'] ?? $current['color'])),
+            validFrequency((string) ($input['frequencyType'] ?? $current['frequency_type'])),
+            max(1, min(7, (int) ($input['targetCount'] ?? $current['target_count']))),
+            json_encode(normalizedScheduleDays($input['scheduleDays'] ?? json_decode((string) ($current['schedule_days'] ?? '[]'), true)), JSON_THROW_ON_ERROR),
+            $reminderTime,
+            array_key_exists('allowMakeup', $input) ? (int) (bool) $input['allowMakeup'] : (int) $current['allow_makeup'],
+            $habitId,
+            $userId,
+        ]);
+        Http::json(bootstrapData($db, $userId, $timezone));
+
+    case 'habits.delete':
+        Http::requireMethod('DELETE', 'POST');
+        $input = Http::input();
+        $habitId = (int) ($input['id'] ?? 0);
+        ownedRow($db, 'habits', $habitId, $userId);
+
+        $db->beginTransaction();
+        try {
+            $importStatement = $db->prepare("SELECT plan_import_id FROM plan_import_items WHERE entity_type = 'habit' AND entity_id = ?");
+            $importStatement->execute([$habitId]);
+            $planImportIds = array_map('intval', $importStatement->fetchAll(PDO::FETCH_COLUMN));
+            $db->prepare("DELETE FROM plan_import_items WHERE entity_type = 'habit' AND entity_id = ?")->execute([$habitId]);
+            $db->prepare('DELETE FROM habits WHERE id = ? AND user_id = ?')->execute([$habitId, $userId]);
+            if ($planImportIds !== []) {
+                $updateImport = $db->prepare(
+                    "UPDATE plan_imports
+                     SET imported_counts = JSON_SET(imported_counts, '$.habits', GREATEST(0, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(imported_counts, '$.habits')) AS SIGNED), 0) - 1))
+                     WHERE id = ? AND user_id = ?"
+                );
+                foreach ($planImportIds as $planImportId) {
+                    $updateImport->execute([$planImportId, $userId]);
+                }
+            }
+            $db->commit();
+        } catch (Throwable $error) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $error;
+        }
+        Http::json(bootstrapData($db, $userId, $timezone));
 
     case 'habits.checkin':
         Http::requireMethod('POST');
         $input = Http::input();
         $habitId = (int) ($input['id'] ?? 0);
-        ownedRow($db, 'habits', $habitId, $userId);
+        $habit = ownedRow($db, 'habits', $habitId, $userId);
         $date = (string) ($input['date'] ?? '');
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
             Http::json(['error' => '打卡日期格式不正确。'], 422);
+        }
+        $localToday = new DateTimeImmutable('today', new DateTimeZone($timezone));
+        if ($date < $localToday->format('Y-m-d') && !(bool) $habit['allow_makeup']) {
+            Http::json(['error' => '这个习惯没有开启补签。'], 422);
         }
         if ((bool) ($input['checked'] ?? false)) {
             $statement = $db->prepare(
@@ -2174,6 +2238,19 @@ function validTime(?string $value): ?string
 function validFrequency(string $value): string
 {
     return in_array($value, ['daily', 'weekly', 'custom'], true) ? $value : 'daily';
+}
+
+function normalizedScheduleDays(mixed $value): array
+{
+    $days = [];
+    foreach (is_array($value) ? $value : [] as $day) {
+        $day = (int) $day;
+        if ($day >= 1 && $day <= 7 && !in_array($day, $days, true)) {
+            $days[] = $day;
+        }
+    }
+    sort($days);
+    return $days === [] ? [1, 2, 3, 4, 5, 6, 7] : $days;
 }
 
 function validColor(string $value): string

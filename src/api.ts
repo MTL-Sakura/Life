@@ -133,6 +133,14 @@ export const api = {
     return request<BootstrapData>('habits.create', { method: 'POST', body: input })
   },
 
+  async updateHabit(input: Partial<Habit> & { id: number; name: string }): Promise<BootstrapData> {
+    return request<BootstrapData>('habits.update', { method: 'PATCH', body: input })
+  },
+
+  async deleteHabit(id: number): Promise<BootstrapData> {
+    return request<BootstrapData>('habits.delete', { method: 'DELETE', body: { id } })
+  },
+
   async checkHabit(id: number, date: string, checked: boolean): Promise<void> {
     await request('habits.checkin', { method: 'POST', body: { id, date, checked } })
   },
