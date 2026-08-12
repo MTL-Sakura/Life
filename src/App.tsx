@@ -2504,7 +2504,7 @@ function ReviewPage({ summary, tasks, onAiPlan }: { summary: ReviewSummary; task
   )
 }
 
-function SettingsPage({ settings: initialSettings, browserPush, activeSection, dataCounts, planImports, backups, onSectionChange, onSave, onEnablePush, onDisablePush, onTestPush, onTestMail, onChangePassword, onExportData, onClearTasksAndHabits, onCreateBackup, onPreviewBackup, onPreviewStoredBackup, onRestoreBackup, onRestoreStoredBackup, onDownloadStoredBackup, onImportPlan, onDeletePlanImport, onLogout }: {
+function SettingsPage({ settings: initialSettings, browserPush, activeSection, dataCounts, planImports, backups, onSectionChange, onSave, onEnablePush, onDisablePush, onTestPush, onTestMail, onChangePassword, onExportData, onClearTasksAndHabits, onCreateBackup, onPreviewBackup, onPreviewStoredBackup, onRestoreBackup, onRestoreStoredBackup, onDownloadStoredBackup, onDeleteStoredBackup, onImportPlan, onDeletePlanImport, onLogout }: {
   settings: UserSettings
   browserPush: BrowserPushState
   activeSection: SettingsSectionKey
@@ -2526,6 +2526,7 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
   onRestoreBackup: (backup: Record<string, unknown>, password: string) => Promise<void>
   onRestoreStoredBackup: (id: number, password: string) => Promise<void>
   onDownloadStoredBackup: (backup: BackupRecord) => Promise<void>
+  onDeleteStoredBackup: (id: number) => Promise<void>
   onImportPlan: (plan: PlanImportDocument) => Promise<PlanImportCounts>
   onDeletePlanImport: (id: number) => Promise<void>
   onLogout: () => Promise<void>
@@ -2554,6 +2555,7 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
   const [restorePassword, setRestorePassword] = useState('')
   const [backupError, setBackupError] = useState('')
   const [backupBusy, setBackupBusy] = useState(false)
+  const [deletingBackupId, setDeletingBackupId] = useState<number | null>(null)
   const [clearingData, setClearingData] = useState(false)
   const [clearDataError, setClearDataError] = useState('')
 
@@ -2767,6 +2769,24 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
     }
   }
 
+  async function deleteStoredBackup(backup: BackupRecord) {
+    if (!window.confirm(`永久删除“${backup.fileName}”？删除后无法用这份文件恢复。`)) return
+    setDeletingBackupId(backup.id)
+    setBackupError('')
+    try {
+      await onDeleteStoredBackup(backup.id)
+      if (restoreStoredId === backup.id) {
+        setRestoreStoredId(null)
+        setBackupPreview(null)
+        setRestorePassword('')
+      }
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : '备份删除失败。')
+    } finally {
+      setDeletingBackupId(null)
+    }
+  }
+
   return (
     <div className="page-content settings-page">
       <section className="page-heading"><div><p className="eyebrow">SETTINGS</p><h1>设置</h1><p>让看板按照你的生活节奏工作。</p></div></section>
@@ -2888,14 +2908,19 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
               {backupError && <p className="form-error">{backupError}</p>}
               {backups.length > 0 && (
                 <div className="backup-history">
-                  <h3>服务器备份</h3>
-                  {backups.map((backup) => (
-                    <div className="plan-import-history-row" key={backup.id}>
-                      <div><strong>{{ manual: '手动', daily: '每日', weekly: '每周', pre_restore: '操作前' }[backup.kind]}备份</strong><span>{taskMoment(backup.createdAt)} · {(backup.sizeBytes / 1024).toFixed(1)} KB</span></div>
-                      <button type="button" className="icon-button" title="下载" aria-label="下载备份" onClick={() => void onDownloadStoredBackup(backup)}><Download size={16} /></button>
-                      <button type="button" className="outline-button" disabled={backupBusy} onClick={() => void selectStoredBackup(backup.id)}>恢复</button>
-                    </div>
-                  ))}
+                  <div className="backup-history-heading"><h3>服务器备份</h3><span>{backups.length} 份</span></div>
+                  <div className="backup-history-list">
+                    {backups.map((backup) => (
+                      <div className="backup-history-row" key={backup.id}>
+                        <div><strong>{{ manual: '手动', daily: '每日', weekly: '每周', pre_restore: '操作前' }[backup.kind]}备份</strong><span>{taskMoment(backup.createdAt)} · {(backup.sizeBytes / 1024).toFixed(1)} KB</span></div>
+                        <div className="backup-history-actions">
+                          <button type="button" className="icon-button" title="下载备份" aria-label={`下载备份 ${backup.fileName}`} onClick={() => void onDownloadStoredBackup(backup)}><Download size={16} /></button>
+                          <button type="button" className="outline-button" disabled={backupBusy || deletingBackupId !== null} onClick={() => void selectStoredBackup(backup.id)}>恢复</button>
+                          <button type="button" className="icon-button danger-icon-button" title="删除备份" aria-label={`删除备份 ${backup.fileName}`} disabled={deletingBackupId !== null} onClick={() => void deleteStoredBackup(backup)}>{deletingBackupId === backup.id ? <RefreshCcw className="spin" size={16} /> : <Trash2 size={16} />}</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
               <div className="settings-divider" />
@@ -3980,6 +4005,15 @@ export default function App() {
     showToast('服务器备份已下载')
   }
 
+  async function deleteStoredBackup(id: number) {
+    if (demoMode) {
+      setBackups((current) => current.filter((backup) => backup.id !== id))
+    } else {
+      applyBootstrap(await api.deleteStoredBackup(id))
+    }
+    showToast('服务器备份已删除')
+  }
+
   async function importPlan(plan: PlanImportDocument) {
     if (demoMode) throw new Error('演示模式不会写入真实数据，请在服务器版本中导入。')
     const result = await api.importPlan(plan)
@@ -4263,7 +4297,7 @@ export default function App() {
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
         {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} />}
         {page === 'review' && <ReviewPage summary={review} tasks={tasks} onAiPlan={() => openAiPlanner('next_week')} />}
-        {page === 'settings' && <SettingsPage settings={settings} browserPush={browserPush} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} backups={backups} onSectionChange={navigateSettings} onSave={saveSettings} onEnablePush={enableBrowserPush} onDisablePush={disableBrowserPush} onTestPush={testBrowserPush} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onClearTasksAndHabits={clearTasksAndHabits} onCreateBackup={createBackup} onPreviewBackup={previewBackup} onPreviewStoredBackup={previewStoredBackup} onRestoreBackup={restoreBackup} onRestoreStoredBackup={restoreStoredBackup} onDownloadStoredBackup={downloadStoredBackup} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
+        {page === 'settings' && <SettingsPage settings={settings} browserPush={browserPush} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} backups={backups} onSectionChange={navigateSettings} onSave={saveSettings} onEnablePush={enableBrowserPush} onDisablePush={disableBrowserPush} onTestPush={testBrowserPush} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onClearTasksAndHabits={clearTasksAndHabits} onCreateBackup={createBackup} onPreviewBackup={previewBackup} onPreviewStoredBackup={previewStoredBackup} onRestoreBackup={restoreBackup} onRestoreStoredBackup={restoreStoredBackup} onDownloadStoredBackup={downloadStoredBackup} onDeleteStoredBackup={deleteStoredBackup} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
       {selectedTask && <TaskDetail task={selectedTask} idlePermission={idlePermission} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onStart={() => startNowTask(selectedTask)} onComplete={() => { setSelectedTaskId(null); setCompletionTaskId(selectedTask.id) }} onSnooze={(minutes) => snoozeTaskReminder(selectedTask, minutes)} onRescue={() => { setSelectedTaskId(null); setRescueTaskId(selectedTask.id) }} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} onSkipOccurrence={() => skipRecurringTask(selectedTask.id)} onPauseSeries={(date) => pauseRecurringTask(selectedTask.id, date)} />}

@@ -181,6 +181,10 @@ export const api = {
     return request<Record<string, unknown>>('backup.download', { method: 'POST', body: { id } })
   },
 
+  async deleteStoredBackup(id: number): Promise<BootstrapData> {
+    return request<BootstrapData>('backup.delete', { method: 'DELETE', body: { id } })
+  },
+
   async importPlan(plan: PlanImportDocument): Promise<PlanImportResult> {
     return request<PlanImportResult>('data.import', { method: 'POST', body: { plan } })
   },

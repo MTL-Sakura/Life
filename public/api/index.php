@@ -764,6 +764,16 @@ switch ($action) {
             Http::json(['error' => $error->getMessage()], 404);
         }
 
+    case 'backup.delete':
+        Http::requireMethod('DELETE', 'POST');
+        $input = Http::input();
+        try {
+            (new BackupManager())->delete($db, $userId, (int) ($input['id'] ?? 0));
+            Http::json(bootstrapData($db, $userId, $timezone));
+        } catch (RuntimeException $error) {
+            Http::json(['error' => $error->getMessage()], 422);
+        }
+
     case 'backup.restore':
     case 'backup.restore.stored':
         Http::requireMethod('POST');

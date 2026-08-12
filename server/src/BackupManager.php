@@ -135,6 +135,17 @@ final class BackupManager
         return $backup;
     }
 
+    public function delete(PDO $db, int $userId, int $backupId): void
+    {
+        $record = $this->record($db, $backupId, $userId, true);
+        $path = (string) $record['file_path'];
+        if (is_file($path) && !unlink($path)) {
+            throw new RuntimeException('无法删除服务器上的备份文件。');
+        }
+        $db->prepare('DELETE FROM backup_records WHERE id = ? AND user_id = ?')
+            ->execute([$backupId, $userId]);
+    }
+
     public function restore(PDO $db, int $userId, string $timezone, array $backup): void
     {
         $this->preview($backup);

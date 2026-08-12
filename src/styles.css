@@ -1949,6 +1949,75 @@ p {
   margin-top: 18px;
 }
 
+.backup-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.backup-history-heading span {
+  font-size: 10px;
+}
+
+.backup-history-list {
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border-block: 1px solid var(--line);
+}
+
+.backup-history-row {
+  min-height: 66px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 6px 9px 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.backup-history-row:last-child {
+  border-bottom: 0;
+}
+
+.backup-history-row > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.backup-history-row strong,
+.backup-history-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-history-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.danger-icon-button {
+  color: #9a4938;
+}
+
+.danger-icon-button:hover {
+  color: #803728;
+  background: #fff1ed;
+}
+
+.spin {
+  animation: backup-spin 900ms linear infinite;
+}
+
+@keyframes backup-spin {
+  to { transform: rotate(360deg); }
+}
+
 .schedule-block-list {
   display: grid;
   gap: 8px;
