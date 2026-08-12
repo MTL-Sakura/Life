@@ -82,6 +82,12 @@ const pageNames: Record<PageKey, string> = {
 }
 
 const priorityLabels = { high: '高', medium: '中', low: '低' }
+const projectStatusLabels: Record<NonNullable<Project['status']>, string> = {
+  active: '进行中',
+  paused: '已暂停',
+  completed: '已完成',
+  archived: '已归档',
+}
 const failureReasonLabels: Record<FailureReason, string> = {
   time: '时间不够',
   energy: '精力不足',
@@ -268,7 +274,7 @@ const focusIdleConfirmationSeconds = 60
 
 type EditorState =
   | { type: 'task'; taskId?: number; schedule?: boolean }
-  | { type: 'project' }
+  | { type: 'project'; projectId?: number }
   | { type: 'habit' }
   | null
 
@@ -1237,41 +1243,107 @@ function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelet
   )
 }
 
-function ProjectEditor({ onClose, onSave }: { onClose: () => void; onSave: (project: Partial<Project> & { title: string }) => Promise<void> }) {
-  const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
-  const [area, setArea] = useState('个人成长')
-  const [color, setColor] = useState(palette[0])
-  const [dueAt, setDueAt] = useState('')
-  const [stages, setStages] = useState('确定范围\n完成第一阶段\n完成第二阶段\n项目复盘')
+function ProjectEditor({ project, onClose, onSave }: { project?: Project; onClose: () => void; onSave: (project: Partial<Project> & { id?: number; title: string }) => Promise<void> }) {
+  const [title, setTitle] = useState(project?.title ?? '')
+  const [description, setDescription] = useState(project?.description ?? '')
+  const [area, setArea] = useState(project?.area ?? '个人成长')
+  const [color, setColor] = useState(project?.color ?? palette[0])
+  const [status, setStatus] = useState<NonNullable<Project['status']>>(project?.status ?? 'active')
+  const [dueAt, setDueAt] = useState(project?.dueAt?.slice(0, 10) ?? '')
+  const [stages, setStages] = useState(project ? project.stages.join('\n') : '确定范围\n完成第一阶段\n完成第二阶段\n项目复盘')
+  const [currentStage, setCurrentStage] = useState(project?.currentStage ?? '')
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const stageOptions = stages.split('\n').map((item) => item.trim()).filter(Boolean)
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (!title.trim()) return
     setSaving(true)
+    setError('')
     try {
-      const stageList = stages.split('\n').map((item) => item.trim()).filter(Boolean)
-      await onSave({ title: title.trim(), description: description.trim(), area, color, dueAt: dueAt ? `${dueAt}T23:59:00` : null, stages: stageList, currentStage: stageList[0] ?? '确定下一步' })
+      const stageList = [...new Set(stageOptions)]
+      await onSave({ id: project?.id, title: title.trim(), description: description.trim(), area: area.trim() || '个人', color, status, dueAt: dueAt ? `${dueAt}T23:59:00` : null, stages: stageList, currentStage: stageList.includes(currentStage) ? currentStage : stageList[0] ?? '确定下一步' })
       onClose()
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '项目保存失败')
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <ModalShell title="新建项目" eyebrow="PROJECT" onClose={onClose}>
+    <ModalShell title={project ? '编辑项目' : '新建项目'} eyebrow="PROJECT" onClose={onClose}>
       <form className="editor-form" onSubmit={submit}>
         <label><span>项目名称</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：完成德语 B1" /></label>
         <label><span>项目说明</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} /></label>
         <div className="editor-grid">
           <label><span>生活领域</span><input value={area} onChange={(event) => setArea(event.target.value)} /></label>
           <label><span>目标日期</span><input type="date" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /></label>
+          <label><span>项目状态</span><select value={status} onChange={(event) => setStatus(event.target.value as NonNullable<Project['status']>)}>{Object.entries(projectStatusLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+          <label><span>当前阶段</span><select value={stageOptions.includes(currentStage) ? currentStage : stageOptions[0] ?? ''} onChange={(event) => setCurrentStage(event.target.value)} disabled={stageOptions.length === 0}>{stageOptions.length > 0 ? stageOptions.map((stage) => <option value={stage} key={stage}>{stage}</option>) : <option value="">请先填写项目阶段</option>}</select></label>
           <fieldset className="color-field full"><legend>颜色</legend><div className="color-swatches">{palette.map((item) => <button type="button" className={color === item ? 'active' : ''} style={{ backgroundColor: item }} onClick={() => setColor(item)} aria-label={`选择颜色 ${item}`} key={item} />)}</div></fieldset>
-          <label className="full"><span>项目阶段</span><textarea value={stages} onChange={(event) => setStages(event.target.value)} /></label>
+          <label className="full"><span>项目阶段（每行一个）</span><textarea value={stages} onChange={(event) => setStages(event.target.value)} /></label>
         </div>
-        <footer className="modal-actions"><button type="button" className="outline-button" onClick={onClose}>取消</button><button type="submit" className="primary-button" disabled={saving || !title.trim()}>{saving ? '保存中…' : '创建项目'}</button></footer>
+        {error && <p className="form-error">{error}</p>}
+        <footer className="modal-actions"><button type="button" className="outline-button" onClick={onClose}>取消</button><button type="submit" className="primary-button" disabled={saving || !title.trim()}>{saving ? '保存中…' : project ? '保存修改' : '创建项目'}</button></footer>
       </form>
+    </ModalShell>
+  )
+}
+
+function ProjectDetail({ project, tasks, onClose, onEdit, onDelete, onOpenTask }: { project: Project; tasks: Task[]; onClose: () => void; onEdit: () => void; onDelete: () => Promise<void>; onOpenTask: (id: number) => void }) {
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState('')
+  const projectTasks = tasks.filter((task) => task.projectId === project.id && task.status !== 'cancelled')
+  const openTasks = projectTasks.filter((task) => !task.completed)
+  const reachedIndex = project.progress > 0 && project.stages.length > 0 ? Math.ceil((project.progress / 100) * project.stages.length) - 1 : -1
+
+  async function remove() {
+    setDeleting(true)
+    setError('')
+    try {
+      await onDelete()
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : '项目删除失败')
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <ModalShell title={project.title} eyebrow="PROJECT DETAIL" onClose={onClose}>
+      <div className="project-detail">
+        <section className="project-detail-overview">
+          <div className="project-detail-status"><span className="project-icon large" style={{ backgroundColor: `${project.color}18`, color: project.color }}><FolderKanban size={20} /></span><div><span>{project.area}</span><strong>{projectStatusLabels[project.status ?? 'active']}</strong></div></div>
+          <div className="project-progress-row"><span>整体进度</span><strong>{project.progress}%</strong></div>
+          <ProgressBar value={project.progress} color={project.color} />
+        </section>
+
+        <section className="project-detail-meta">
+          <div><Target size={17} /><span>当前阶段</span><strong>{project.currentStage}</strong></div>
+          <div><CalendarDays size={17} /><span>目标日期</span><strong>{project.due}</strong></div>
+          <div><CheckCircle2 size={17} /><span>任务进度</span><strong>{project.completedTasks}/{project.totalTasks}</strong></div>
+          <div><Clock3 size={17} /><span>待完成</span><strong>{openTasks.length} 项</strong></div>
+        </section>
+
+        {project.description && <section className="task-detail-section"><h3>项目说明</h3><p>{project.description}</p></section>}
+
+        <section className="task-detail-section">
+          <div className="task-detail-heading"><h3>项目阶段</h3><span>{project.stages.length} 个阶段</span></div>
+          {project.stages.length > 0 ? <div className="project-detail-stages">{project.stages.map((stage, index) => <div className={index <= reachedIndex ? 'reached' : ''} key={stage}><span style={{ borderColor: project.color, backgroundColor: index <= reachedIndex ? project.color : '#fff' }}>{index < reachedIndex ? <Check size={12} /> : index + 1}</span><strong>{stage}</strong>{stage === project.currentStage && <small>当前</small>}</div>)}</div> : <p className="empty-copy">这个项目还没有阶段。</p>}
+        </section>
+
+        <section className="task-detail-section">
+          <div className="task-detail-heading"><h3>关联任务</h3><span>{projectTasks.length} 项</span></div>
+          {projectTasks.length > 0 ? <div className="project-task-list">{projectTasks.map((task) => <button type="button" onClick={() => onOpenTask(task.id)} key={task.id}><span className={task.completed ? 'is-complete' : ''}>{task.completed ? <Check size={12} /> : <Circle size={12} />}</span><strong>{task.title}</strong><small>{task.completed ? '已完成' : task.due}</small><ChevronRight size={14} /></button>)}</div> : <p className="empty-copy">还没有任务归入这个项目。</p>}
+        </section>
+
+        {confirmDelete && <div className="delete-confirm" role="alert"><div><strong>删除“{project.title}”？</strong><span>项目阶段会删除，{projectTasks.length} 个关联任务会保留并移到“未分类”。</span></div><button type="button" className="outline-button" onClick={() => setConfirmDelete(false)}>取消</button><button type="button" className="danger-button" onClick={() => void remove()} disabled={deleting}>{deleting ? '删除中…' : '确认删除'}</button></div>}
+        {error && <p className="form-error">{error}</p>}
+
+        <footer className="task-detail-actions"><button type="button" className="icon-button task-delete-button" onClick={() => setConfirmDelete(true)} aria-label="删除项目" title="删除项目"><Trash2 size={17} /></button><button type="button" className="primary-button" onClick={onEdit}><Pencil size={16} /> 编辑项目</button></footer>
+      </div>
     </ModalShell>
   )
 }
@@ -2253,14 +2325,14 @@ function CalendarPage({ tasks, onNewTask, onOpenTask }: { tasks: Task[]; onNewTa
   )
 }
 
-function ProjectCard({ project }: { project: Project }) {
+function ProjectCard({ project, onOpen }: { project: Project; onOpen: () => void }) {
   const reachedIndex = project.progress > 0 ? Math.ceil((project.progress / 100) * project.stages.length) - 1 : -1
   return (
-    <article className="project-card">
+    <article className="project-card" onClick={onOpen}>
       <div className="project-card-head">
         <span className="project-icon large" style={{ backgroundColor: `${project.color}18`, color: project.color }}><FolderKanban size={20} /></span>
-        <div><span>{project.area}</span><h2>{project.title}</h2></div>
-        <button className="row-action"><MoreHorizontal size={19} /></button>
+        <div><span>{project.area}</span><h2><button type="button" className="project-title-button" onClick={(event) => { event.stopPropagation(); onOpen() }}>{project.title}</button></h2></div>
+        <button type="button" className="row-action" onClick={(event) => { event.stopPropagation(); onOpen() }} aria-label={`管理项目 ${project.title}`} title="查看、编辑或删除项目"><MoreHorizontal size={19} /></button>
       </div>
       <div className="project-progress-row"><span>整体进度</span><strong>{project.progress}%</strong></div>
       <ProgressBar value={project.progress} color={project.color} />
@@ -2280,7 +2352,7 @@ function ProjectCard({ project }: { project: Project }) {
   )
 }
 
-function ProjectsPage({ projects, onNewProject }: { projects: Project[]; onNewProject: () => void }) {
+function ProjectsPage({ projects, onNewProject, onOpenProject }: { projects: Project[]; onNewProject: () => void; onOpenProject: (id: number) => void }) {
   const activeProjects = projects.filter((project) => (project.status ?? 'active') === 'active').length
   const completedTasks = projects.reduce((sum, project) => sum + project.completedTasks, 0)
   const averageProgress = projects.length > 0
@@ -2298,7 +2370,7 @@ function ProjectsPage({ projects, onNewProject }: { projects: Project[]; onNewPr
         <div><Target size={19} /><span>平均进度</span><strong>{averageProgress}%</strong></div>
       </section>
       <div className="project-grid">
-        {projects.map((project) => <ProjectCard key={project.id} project={project} />)}
+        {projects.map((project) => <ProjectCard key={project.id} project={project} onOpen={() => onOpenProject(project.id)} />)}
         <button className="new-project-card" onClick={onNewProject}><Plus size={22} /><strong>新建项目</strong><span>从目标、阶段和第一步开始</span></button>
       </div>
     </div>
@@ -3023,6 +3095,7 @@ export default function App() {
   const [rescueTaskId, setRescueTaskId] = useState<number | null>(null)
   const [editor, setEditor] = useState<EditorState>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null)
   const [quickEntry, setQuickEntry] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [toast, setToast] = useState('')
@@ -3045,11 +3118,15 @@ export default function App() {
 
   const inboxCount = useMemo(() => tasks.filter((task) => !task.completed && task.unscheduled).length, [tasks])
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId), [selectedTaskId, tasks])
+  const selectedProject = useMemo(() => projectItems.find((project) => project.id === selectedProjectId), [projectItems, selectedProjectId])
   const completionTask = useMemo(() => tasks.find((task) => task.id === completionTaskId), [completionTaskId, tasks])
   const rescueTask = useMemo(() => tasks.find((task) => task.id === rescueTaskId), [rescueTaskId, tasks])
   const runningFocusTask = useMemo(() => tasks.find((task) => task.focusSession?.status === 'running') ?? null, [tasks])
   const editorTask = editor?.type === 'task' && editor.taskId
     ? tasks.find((task) => task.id === editor.taskId)
+    : undefined
+  const editorProject = editor?.type === 'project' && editor.projectId
+    ? projectItems.find((project) => project.id === editor.projectId)
     : undefined
 
   useEffect(() => {
@@ -4207,28 +4284,55 @@ export default function App() {
     setEditor({ type: 'task', taskId: id, schedule })
   }
 
-  async function saveProject(draft: Partial<Project> & { title: string }) {
+  async function saveProject(draft: Partial<Project> & { id?: number; title: string }) {
     if (!demoMode) {
-      applyBootstrap(await api.createProject(draft))
-      showToast('项目已创建')
+      applyBootstrap(draft.id
+        ? await api.updateProject(draft as Partial<Project> & { id: number; title: string })
+        : await api.createProject(draft))
+      showToast(draft.id ? '项目已更新' : '项目已创建')
       return
     }
-    setProjectItems((current) => [{
-      id: Date.now(),
+    const existing = draft.id ? projectItems.find((project) => project.id === draft.id) : undefined
+    const saved: Project = {
+      ...existing,
+      id: existing?.id ?? Date.now(),
       title: draft.title,
       description: draft.description,
       area: draft.area ?? '个人',
       color: draft.color ?? '#496d5b',
-      progress: 0,
+      progress: existing?.progress ?? 0,
       due: draft.dueAt?.slice(0, 10) ?? '未设置',
       dueAt: draft.dueAt,
       currentStage: draft.currentStage ?? draft.stages?.[0] ?? '确定下一步',
-      completedTasks: 0,
-      totalTasks: 0,
+      completedTasks: existing?.completedTasks ?? 0,
+      totalTasks: existing?.totalTasks ?? 0,
       stages: draft.stages ?? [],
-      status: 'active',
-    }, ...current])
-    showToast('项目已创建')
+      status: draft.status ?? existing?.status ?? 'active',
+    }
+    setProjectItems((current) => {
+      const next = existing ? current.map((project) => project.id === existing.id ? saved : project) : [saved, ...current]
+      return next.filter((project) => project.status !== 'archived')
+    })
+    if (existing && existing.title !== saved.title) {
+      setTasks((current) => current.map((task) => task.projectId === existing.id ? { ...task, project: saved.title } : task))
+    }
+    showToast(existing ? '项目已更新' : '项目已创建')
+  }
+
+  async function deleteProject(id: number) {
+    if (!demoMode) {
+      try {
+        applyBootstrap(await api.deleteProject(id))
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : '项目删除失败')
+        throw error
+      }
+    } else {
+      setProjectItems((current) => current.filter((project) => project.id !== id))
+      setTasks((current) => current.map((task) => task.projectId === id ? { ...task, projectId: null, project: '未分类' } : task))
+    }
+    setSelectedProjectId(null)
+    showToast('项目已删除，关联任务已移到未分类')
   }
 
   async function saveHabit(draft: Partial<Habit> & { name: string }) {
@@ -4294,15 +4398,16 @@ export default function App() {
         {page === 'today' && <TodayPage tasks={tasks} habits={habits} projects={projectItems} dailyRhythm={dailyRhythm} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} toggleHabit={toggleHabit} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} onNavigate={navigate} onRebalance={openRebalanceSetup} onOpenDailyFlow={openDailyFlow} />}
         {page === 'inbox' && <InboxPage tasks={tasks} quickEntry={quickEntry} setQuickEntry={setQuickEntry} addTask={addTask} toggleTask={toggleTask} onNewTask={() => setEditor({ type: 'task' })} onOpenTask={openTask} onScheduleTask={(id) => editTask(id, true)} />}
         {page === 'calendar' && <CalendarPage tasks={tasks} onNewTask={() => setEditor({ type: 'task', schedule: true })} onOpenTask={openTask} />}
-        {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
+        {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} onOpenProject={setSelectedProjectId} />}
         {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} />}
         {page === 'review' && <ReviewPage summary={review} tasks={tasks} onAiPlan={() => openAiPlanner('next_week')} />}
         {page === 'settings' && <SettingsPage settings={settings} browserPush={browserPush} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} backups={backups} onSectionChange={navigateSettings} onSave={saveSettings} onEnablePush={enableBrowserPush} onDisablePush={disableBrowserPush} onTestPush={testBrowserPush} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onClearTasksAndHabits={clearTasksAndHabits} onCreateBackup={createBackup} onPreviewBackup={previewBackup} onPreviewStoredBackup={previewStoredBackup} onRestoreBackup={restoreBackup} onRestoreStoredBackup={restoreStoredBackup} onDownloadStoredBackup={downloadStoredBackup} onDeleteStoredBackup={deleteStoredBackup} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
       {selectedTask && <TaskDetail task={selectedTask} idlePermission={idlePermission} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onStart={() => startNowTask(selectedTask)} onComplete={() => { setSelectedTaskId(null); setCompletionTaskId(selectedTask.id) }} onSnooze={(minutes) => snoozeTaskReminder(selectedTask, minutes)} onRescue={() => { setSelectedTaskId(null); setRescueTaskId(selectedTask.id) }} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} onSkipOccurrence={() => skipRecurringTask(selectedTask.id)} onPauseSeries={(date) => pauseRecurringTask(selectedTask.id, date)} />}
+      {selectedProject && <ProjectDetail project={selectedProject} tasks={tasks} onClose={() => setSelectedProjectId(null)} onEdit={() => { setSelectedProjectId(null); setEditor({ type: 'project', projectId: selectedProject.id }) }} onDelete={() => deleteProject(selectedProject.id)} onOpenTask={(id) => { setSelectedProjectId(null); openTask(id) }} />}
       {editor?.type === 'task' && <TaskEditor task={editorTask} schedule={editor.schedule} projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}
-      {editor?.type === 'project' && <ProjectEditor onClose={() => setEditor(null)} onSave={saveProject} />}
+      {editor?.type === 'project' && <ProjectEditor project={editorProject} onClose={() => setEditor(null)} onSave={saveProject} />}
       {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}
       {dailyFlow === 'morning' && !selectedTask && <MorningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={saveMorningCheckin} onSkip={skipMorningCheckin} />}
       {dailyFlow === 'evening' && !selectedTask && <EveningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={closeDailyRhythm} />}

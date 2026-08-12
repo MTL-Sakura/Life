@@ -683,6 +683,101 @@ switch ($action) {
         }
         Http::json(bootstrapData($db, $userId, $timezone), 201);
 
+    case 'projects.update':
+        Http::requireMethod('PATCH', 'POST');
+        $input = Http::input();
+        $projectId = (int) ($input['id'] ?? 0);
+        $current = ownedRow($db, 'projects', $projectId, $userId);
+        $title = trim((string) ($input['title'] ?? $current['title']));
+        if ($title === '') {
+            Http::json(['error' => '项目名称不能为空。'], 422);
+        }
+
+        $stages = [];
+        foreach ((array) ($input['stages'] ?? []) as $stage) {
+            $stage = trim((string) $stage);
+            if ($stage !== '' && !in_array($stage, $stages, true)) {
+                $stages[] = $stage;
+            }
+        }
+        $currentStage = nullableString($input['currentStage'] ?? $current['current_stage']);
+        if ($stages !== [] && ($currentStage === null || !in_array($currentStage, $stages, true))) {
+            $currentStage = $stages[0];
+        }
+        $dueAt = array_key_exists('dueAt', $input)
+            ? DateTimes::toUtc(nullableString($input['dueAt']), $timezone)
+            : nullableString($current['due_at'] ?? null);
+
+        $db->beginTransaction();
+        try {
+            $db->prepare(
+                'UPDATE projects SET title = ?, description = ?, area = ?, color = ?, status = ?, due_at = ?, current_stage = ? WHERE id = ? AND user_id = ?'
+            )->execute([
+                $title,
+                trim((string) ($input['description'] ?? $current['description'] ?? '')),
+                trim((string) ($input['area'] ?? $current['area'])) ?: '个人',
+                validColor((string) ($input['color'] ?? $current['color'])),
+                validProjectStatus((string) ($input['status'] ?? $current['status'])),
+                $dueAt,
+                $currentStage,
+                $projectId,
+                $userId,
+            ]);
+
+            if (array_key_exists('stages', $input)) {
+                $completedStatement = $db->prepare('SELECT title, completed FROM project_stages WHERE project_id = ?');
+                $completedStatement->execute([$projectId]);
+                $completedByTitle = [];
+                foreach ($completedStatement->fetchAll() as $stage) {
+                    $completedByTitle[(string) $stage['title']] = (int) $stage['completed'];
+                }
+                $db->prepare('DELETE FROM project_stages WHERE project_id = ?')->execute([$projectId]);
+                $stageStatement = $db->prepare('INSERT INTO project_stages (project_id, title, position, completed) VALUES (?, ?, ?, ?)');
+                foreach ($stages as $position => $stage) {
+                    $stageStatement->execute([$projectId, $stage, $position, $completedByTitle[$stage] ?? 0]);
+                }
+            }
+            $db->commit();
+        } catch (Throwable $error) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $error;
+        }
+        Http::json(bootstrapData($db, $userId, $timezone));
+
+    case 'projects.delete':
+        Http::requireMethod('DELETE', 'POST');
+        $input = Http::input();
+        $projectId = (int) ($input['id'] ?? 0);
+        ownedRow($db, 'projects', $projectId, $userId);
+
+        $db->beginTransaction();
+        try {
+            $importStatement = $db->prepare("SELECT plan_import_id FROM plan_import_items WHERE entity_type = 'project' AND entity_id = ?");
+            $importStatement->execute([$projectId]);
+            $planImportIds = array_map('intval', $importStatement->fetchAll(PDO::FETCH_COLUMN));
+            $db->prepare("DELETE FROM plan_import_items WHERE entity_type = 'project' AND entity_id = ?")->execute([$projectId]);
+            $db->prepare('DELETE FROM projects WHERE id = ? AND user_id = ?')->execute([$projectId, $userId]);
+            if ($planImportIds !== []) {
+                $updateImport = $db->prepare(
+                    "UPDATE plan_imports
+                     SET imported_counts = JSON_SET(imported_counts, '$.projects', GREATEST(0, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(imported_counts, '$.projects')) AS SIGNED), 0) - 1))
+                     WHERE id = ? AND user_id = ?"
+                );
+                foreach ($planImportIds as $planImportId) {
+                    $updateImport->execute([$planImportId, $userId]);
+                }
+            }
+            $db->commit();
+        } catch (Throwable $error) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $error;
+        }
+        Http::json(bootstrapData($db, $userId, $timezone));
+
     case 'account.password':
         Http::requireMethod('PATCH', 'POST');
         $input = Http::input();
@@ -2039,6 +2134,11 @@ function validPriority(string $value): string
 function validStatus(string $value): string
 {
     return in_array($value, ['inbox', 'planned', 'in_progress', 'completed', 'cancelled'], true) ? $value : 'inbox';
+}
+
+function validProjectStatus(string $value): string
+{
+    return in_array($value, ['active', 'paused', 'completed', 'archived'], true) ? $value : 'active';
 }
 
 function validEnergy(mixed $value): ?int

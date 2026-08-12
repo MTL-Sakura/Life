@@ -141,6 +141,14 @@ export const api = {
     return request<BootstrapData>('projects.create', { method: 'POST', body: input })
   },
 
+  async updateProject(input: Partial<Project> & { id: number; title: string }): Promise<BootstrapData> {
+    return request<BootstrapData>('projects.update', { method: 'PATCH', body: input })
+  },
+
+  async deleteProject(id: number): Promise<BootstrapData> {
+    return request<BootstrapData>('projects.delete', { method: 'DELETE', body: { id } })
+  },
+
   async updateSettings(settings: UserSettings): Promise<void> {
     await request('settings.update', { method: 'PATCH', body: settings })
   },
