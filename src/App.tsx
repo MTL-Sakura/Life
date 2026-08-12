@@ -2998,7 +2998,7 @@ export default function App() {
   }, [dailyRhythm.date, demoMode, loggedIn])
 
   useEffect(() => {
-    if (loggedIn !== true || dailyFlow !== null || dailyRhythm.date !== berlinIsoDate()) return
+    if (loggedIn !== true || page !== 'today' || dailyFlow !== null || dailyRhythm.date !== berlinIsoDate()) return
     const minutes = berlinClockMinutes()
     const prompt = dailyRhythm.morningStatus === 'pending' && minutes < 12 * 60
       ? 'morning'
@@ -3008,7 +3008,7 @@ export default function App() {
     if (prompt === null || dailyPrompted.current === `${dailyRhythm.date}-${prompt}`) return
     dailyPrompted.current = `${dailyRhythm.date}-${prompt}`
     setDailyFlow(prompt)
-  }, [dailyFlow, dailyRhythm, loggedIn])
+  }, [dailyFlow, dailyRhythm, loggedIn, page])
 
   useEffect(() => {
     let active = true
