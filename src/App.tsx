@@ -15,6 +15,7 @@ import {
   Circle,
   Clock3,
   Coffee,
+  Copy,
   CornerDownRight,
   Dumbbell,
   Download,
@@ -56,6 +57,7 @@ import {
 } from 'lucide-react'
 import { api } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
+import { buildPlanImportPrompt } from './planImportPrompt'
 import type { AiPlan, AiPlanScope, BackupPreview, BackupRecord, BootstrapData, Category, DailyRhythm, EveningDecision, FailureReason, Habit, MorningCheckinInput, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, RebalanceInput, RescueInput, RescueOutcome, RescueReason, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
@@ -542,6 +544,26 @@ function downloadJson(data: unknown, fileName: string) {
   link.click()
   link.remove()
   URL.revokeObjectURL(url)
+}
+
+async function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      // Older iOS web apps can expose Clipboard API while rejecting writes.
+    }
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) throw new Error('当前浏览器无法复制，请手动选择提示词。')
 }
 
 function taskScheduleLabel(task: Task) {
@@ -2524,6 +2546,7 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
   const [importPreview, setImportPreview] = useState<PlanImportDocument | null>(null)
   const [importError, setImportError] = useState('')
   const [importing, setImporting] = useState(false)
+  const [promptCopied, setPromptCopied] = useState(false)
   const [deletingImportId, setDeletingImportId] = useState<number | null>(null)
   const [backupData, setBackupData] = useState<Record<string, unknown> | null>(null)
   const [backupPreview, setBackupPreview] = useState<BackupPreview | null>(null)
@@ -2649,6 +2672,17 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
       previewImport(text)
     } catch (error) {
       setImportError(error instanceof Error ? error.message : '无法读取推荐日程。')
+    }
+  }
+
+  async function copyPlannerPrompt() {
+    setImportError('')
+    try {
+      await copyText(buildPlanImportPrompt(settings, berlinIsoDate()))
+      setPromptCopied(true)
+      window.setTimeout(() => setPromptCopied(false), 2200)
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : '提示词复制失败。')
     }
   }
 
@@ -2866,6 +2900,10 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
               )}
               <div className="settings-divider" />
               <div className="settings-title"><div><Upload size={19} /><div><h2>计划导入</h2><p>追加项目、习惯和重复任务</p></div></div></div>
+              <div className="plan-prompt-card">
+                <div><Sparkles size={19} /><span><strong>让 ChatGPT 生成可导入计划</strong><small>提示词已包含当前时区、用餐时段、缓冲和完整 JSON 规则；复制后在末尾填写你的计划需求。</small></span></div>
+                <button type="button" className="outline-button" onClick={() => void copyPlannerPrompt()}>{promptCopied ? <Check size={15} /> : <Copy size={15} />}{promptCopied ? '已复制' : '复制提示词'}</button>
+              </div>
               <textarea
                 className="plan-import-textarea"
                 aria-label="计划 JSON"

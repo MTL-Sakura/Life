@@ -2,7 +2,7 @@
 
 一个面向单用户的人生计划与执行看板。第一版已经包含可部署的响应式前端、PHP API、MySQL 数据结构和单用户登录；本地开发时如果 PHP API 不可用，界面会自动使用演示数据。
 
-当前版本：**v1.15.0** · [项目全景](PROJECT_OVERVIEW.md) · [完整版本记录](CHANGELOG.md) · [发布流程](docs/RELEASE_PROCESS.md) · [GitHub Releases](https://github.com/MTL-Sakura/Life/releases)
+当前版本：**v1.16.0** · [项目全景](PROJECT_OVERVIEW.md) · [完整版本记录](CHANGELOG.md) · [发布流程](docs/RELEASE_PROCESS.md) · [GitHub Releases](https://github.com/MTL-Sakura/Life/releases)
 
 ## 第一版功能
 
@@ -23,6 +23,7 @@
 - JSON 完整备份与密码确认恢复，服务器保留每日、每周和恢复前备份
 - 可在删除前自动备份并一键清空全部任务、习惯及其执行记录，同时保留项目、分类和设置
 - 从 Life Plan JSON 批量导入项目、习惯和重复任务
+- 一键复制与当前时区、用餐和缓冲设置对应的 ChatGPT 提示词，生成可直接导入的 Life Plan JSON
 - 桌面侧边栏与手机底部导航
 
 ## 本地运行
