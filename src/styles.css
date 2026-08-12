@@ -4440,6 +4440,100 @@ p {
   padding: 22px;
 }
 
+.task-quick-actions {
+  margin-bottom: 18px;
+  padding: 2px 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.task-quick-heading,
+.task-quick-heading > div,
+.task-quick-heading span,
+.task-quick-primary,
+.task-quick-secondary {
+  display: flex;
+  align-items: center;
+}
+
+.task-quick-heading {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-quick-heading > div {
+  min-width: 0;
+  gap: 9px;
+}
+
+.task-quick-heading > div > svg {
+  flex: 0 0 auto;
+  color: var(--green);
+}
+
+.task-quick-heading span {
+  min-width: 0;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.task-quick-heading strong {
+  font-size: 11px;
+}
+
+.task-quick-heading small {
+  overflow: hidden;
+  max-width: 270px;
+  color: var(--subtle);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-quick-state {
+  flex: 0 0 auto;
+  color: var(--subtle);
+  font-size: 9px;
+}
+
+.task-quick-state.active {
+  color: var(--green);
+}
+
+.task-quick-primary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.task-quick-primary button {
+  width: 100%;
+}
+
+.task-quick-secondary {
+  min-height: 34px;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.task-quick-secondary > span {
+  flex-direction: row;
+  gap: 6px;
+  margin-right: 2px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.task-quick-secondary .compact {
+  min-width: 76px;
+}
+
+.task-quick-rescue {
+  margin-left: auto;
+}
+
 .task-detail-status {
   min-height: 62px;
   display: grid;
@@ -5742,6 +5836,24 @@ p {
 
   .task-detail-meta {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-quick-heading small {
+    max-width: 210px;
+  }
+
+  .task-quick-secondary > span {
+    width: 100%;
+  }
+
+  .task-quick-secondary .compact {
+    flex: 1 1 0;
+  }
+
+  .task-quick-rescue {
+    width: 100%;
+    justify-content: center;
+    margin: 2px 0 0;
   }
 
   .delete-confirm {

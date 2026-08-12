@@ -1051,7 +1051,7 @@ function FocusIdleWarningDialog({ warning, secondsLeft, onContinue, onPause }: {
   )
 }
 
-function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelete, onToggle, onToggleSubtask, onFocusAction, onSkipOccurrence, onPauseSeries }: {
+function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelete, onToggle, onStart, onComplete, onSnooze, onRescue, onToggleSubtask, onFocusAction, onSkipOccurrence, onPauseSeries }: {
   task: Task
   idlePermission: IdlePermissionState
   onClose: () => void
@@ -1059,6 +1059,10 @@ function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelet
   onSchedule: () => void
   onDelete: () => Promise<void>
   onToggle: () => void
+  onStart: () => Promise<void>
+  onComplete: () => void
+  onSnooze: (minutes: 10 | 30) => Promise<void>
+  onRescue: () => void
   onToggleSubtask: (subtask: Subtask) => void
   onFocusAction: (action: FocusAction) => Promise<boolean>
   onSkipOccurrence: () => Promise<void>
@@ -1068,6 +1072,14 @@ function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelet
   const [deleting, setDeleting] = useState(false)
   const [pauseDate, setPauseDate] = useState(shiftIsoDate(berlinIsoDate(), 1))
   const [recurrenceBusy, setRecurrenceBusy] = useState(false)
+  const [quickBusy, setQuickBusy] = useState<'start' | 'snooze-10' | 'snooze-30' | null>(null)
+  const sessionActive = task.focusSession?.status === 'running' || task.focusSession?.status === 'paused'
+  const startDisabled = quickBusy !== null || task.focusSession?.status === 'running' || (task.status === 'in_progress' && !task.isFocus && task.focusSession?.sessionType !== 'rescue')
+  const startLabel = task.focusSession?.sessionType === 'rescue'
+    ? task.focusSession.status === 'paused' ? '继续救援' : '救援进行中'
+    : task.isFocus
+      ? task.focusSession?.status === 'paused' ? '继续专注' : task.focusSession?.status === 'running' ? '专注进行中' : '开始专注'
+      : task.status === 'in_progress' ? '任务进行中' : '开始任务'
 
   async function remove() {
     setDeleting(true)
@@ -1078,9 +1090,39 @@ function TaskDetail({ task, idlePermission, onClose, onEdit, onSchedule, onDelet
     }
   }
 
+  async function runQuickAction(action: 'start' | 'snooze-10' | 'snooze-30', callback: () => Promise<void>) {
+    setQuickBusy(action)
+    try {
+      await callback()
+    } finally {
+      setQuickBusy(null)
+    }
+  }
+
   return (
     <ModalShell title={task.title} eyebrow="TASK DETAIL" onClose={onClose}>
       <div className="task-detail">
+        {!task.completed && !task.skipped && (
+          <section className="task-quick-actions" aria-label="任务快速处理">
+            <div className="task-quick-heading">
+              <div><Smartphone size={17} /><span><strong>快速处理</strong><small>{task.reminderAt ? `下次提醒 ${taskMoment(task.reminderAt)}` : task.startAt ? '提醒已送达' : '先开始，或安排一个时间'}</small></span></div>
+              <span className={`task-quick-state ${task.status === 'in_progress' ? 'active' : ''}`}>{task.status === 'in_progress' ? '进行中' : '待处理'}</span>
+            </div>
+            <div className="task-quick-primary">
+              <button type="button" className="primary-button" disabled={startDisabled} onClick={() => void runQuickAction('start', onStart)}><Play size={16} />{quickBusy === 'start' ? '启动中…' : startLabel}</button>
+              <button type="button" className="outline-button" disabled={quickBusy !== null} onClick={onComplete}><Check size={16} />完成</button>
+            </div>
+            <div className="task-quick-secondary">
+              {task.startAt ? <>
+                <span><AlarmClock size={15} />稍后提醒</span>
+                <button type="button" className="outline-button compact" disabled={quickBusy !== null} onClick={() => void runQuickAction('snooze-10', () => onSnooze(10))}>{quickBusy === 'snooze-10' ? '设置中…' : '10 分钟'}</button>
+                <button type="button" className="outline-button compact" disabled={quickBusy !== null} onClick={() => void runQuickAction('snooze-30', () => onSnooze(30))}>{quickBusy === 'snooze-30' ? '设置中…' : '30 分钟'}</button>
+              </> : <button type="button" className="outline-button compact" onClick={onSchedule}><CalendarClock size={15} />安排时间</button>}
+              <button type="button" className="text-button task-quick-rescue" disabled={quickBusy !== null || sessionActive} onClick={onRescue}><Sparkles size={15} />有点难开始</button>
+            </div>
+          </section>
+        )}
+
         <div className={`task-detail-status ${task.completed ? 'is-complete' : ''} ${task.skipped ? 'is-skipped' : ''}`}>
           <TaskCheck task={task} onToggle={onToggle} />
           <button type="button" onClick={onToggle} disabled={task.skipped}><strong>{task.skipped ? '已跳过' : task.completed ? '已完成' : '标记为完成'}</strong><small>{task.skipped ? '保留在历史中，不计入完成率' : task.completed ? '再次点击可恢复任务' : '完成后会保留这次记录'}</small></button>
@@ -3515,6 +3557,22 @@ export default function App() {
     if (updated) showToast(`已延后 ${delayMinutes} 分钟，只调整这一次`)
   }
 
+  async function snoozeTaskReminder(task: Task, minutes: 10 | 30) {
+    try {
+      if (!demoMode) {
+        const updated = await api.snoozeTask(task.id, minutes)
+        setTasks((current) => current.map((item) => item.id === task.id ? updated : item))
+        showToast(`将在 ${taskMoment(updated.reminderAt)} 再次提醒`)
+        return
+      }
+      const reminderAt = new Date(Date.now() + minutes * 60_000).toISOString()
+      setTasks((current) => current.map((item) => item.id === task.id ? { ...item, reminderAt } : item))
+      showToast(`将在 ${taskMoment(reminderAt)} 再次提醒`)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '稍后提醒设置失败')
+    }
+  }
+
   async function skipNowTask(task: Task) {
     if (task.isFocus && (task.focusSession?.status === 'running' || task.focusSession?.status === 'paused')) {
       if (!await focusTask(task.id, 'end')) return
@@ -4105,7 +4163,7 @@ export default function App() {
         {page === 'settings' && <SettingsPage settings={settings} browserPush={browserPush} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} backups={backups} onSectionChange={navigateSettings} onSave={saveSettings} onEnablePush={enableBrowserPush} onDisablePush={disableBrowserPush} onTestPush={testBrowserPush} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onCreateBackup={createBackup} onPreviewBackup={previewBackup} onPreviewStoredBackup={previewStoredBackup} onRestoreBackup={restoreBackup} onRestoreStoredBackup={restoreStoredBackup} onDownloadStoredBackup={downloadStoredBackup} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
-      {selectedTask && <TaskDetail task={selectedTask} idlePermission={idlePermission} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} onSkipOccurrence={() => skipRecurringTask(selectedTask.id)} onPauseSeries={(date) => pauseRecurringTask(selectedTask.id, date)} />}
+      {selectedTask && <TaskDetail task={selectedTask} idlePermission={idlePermission} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onStart={() => startNowTask(selectedTask)} onComplete={() => { setSelectedTaskId(null); setCompletionTaskId(selectedTask.id) }} onSnooze={(minutes) => snoozeTaskReminder(selectedTask, minutes)} onRescue={() => { setSelectedTaskId(null); setRescueTaskId(selectedTask.id) }} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} onSkipOccurrence={() => skipRecurringTask(selectedTask.id)} onPauseSeries={(date) => pauseRecurringTask(selectedTask.id, date)} />}
       {editor?.type === 'task' && <TaskEditor task={editorTask} schedule={editor.schedule} projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}
       {editor?.type === 'project' && <ProjectEditor onClose={() => setEditor(null)} onSave={saveProject} />}
       {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}

@@ -73,6 +73,7 @@ final class Views
                 ];
             }, $scheduleBlocks),
             'reminderMinutes' => isset($row['reminder_minutes']) ? (int) $row['reminder_minutes'] : null,
+            'reminderAt' => self::localDate($row['reminder_at'] ?? null, $timezone)?->format(DATE_ATOM),
             'completedAt' => $completed?->format(DATE_ATOM),
             'subtasks' => array_map(static fn (array $subtask): array => [
                 'id' => (int) $subtask['id'],

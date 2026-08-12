@@ -353,6 +353,28 @@ switch ($action) {
         $statement->execute([(int) ($input['id'] ?? 0), $userId]);
         Http::json(['ok' => true]);
 
+    case 'tasks.snooze':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        $taskId = (int) ($input['id'] ?? 0);
+        $minutes = (int) ($input['minutes'] ?? 0);
+        if (!in_array($minutes, [10, 30], true)) {
+            Http::json(['error' => '只能稍后 10 或 30 分钟提醒。'], 422);
+        }
+        $task = ownedRow($db, 'tasks', $taskId, $userId);
+        if (in_array($task['status'], ['completed', 'cancelled'], true)) {
+            Http::json(['error' => '已经结束的任务不能再次提醒。'], 409);
+        }
+        if (nullableString($task['start_at'] ?? null) === null) {
+            Http::json(['error' => '请先为任务安排时间，再设置稍后提醒。'], 422);
+        }
+        $reminderAt = (new DateTimeImmutable('now', new DateTimeZone('UTC')))
+            ->modify("+{$minutes} minutes")
+            ->format('Y-m-d H:i:s');
+        $db->prepare('UPDATE tasks SET reminder_at = ?, push_reminder_sent_at = NULL WHERE id = ? AND user_id = ?')
+            ->execute([$reminderAt, $taskId, $userId]);
+        Http::json(['task' => findTask($db, $taskId, $userId, $timezone)]);
+
     case 'tasks.recurrence.skip':
         Http::requireMethod('POST');
         $input = Http::input();

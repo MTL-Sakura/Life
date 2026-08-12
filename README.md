@@ -2,7 +2,7 @@
 
 一个面向单用户的人生计划与执行看板。第一版已经包含可部署的响应式前端、PHP API、MySQL 数据结构和单用户登录；本地开发时如果 PHP API 不可用，界面会自动使用演示数据。
 
-当前版本：**v1.13.1** · [项目全景](PROJECT_OVERVIEW.md) · [完整版本记录](CHANGELOG.md) · [发布流程](docs/RELEASE_PROCESS.md) · [GitHub Releases](https://github.com/MTL-Sakura/Life/releases)
+当前版本：**v1.14.0** · [项目全景](PROJECT_OVERVIEW.md) · [完整版本记录](CHANGELOG.md) · [发布流程](docs/RELEASE_PROCESS.md) · [GitHub Releases](https://github.com/MTL-Sakura/Life/releases)
 
 ## 第一版功能
 
@@ -11,6 +11,7 @@
 - 可持久化的任务专注计时，支持开始、暂停、继续、结束和离开自动暂停
 - 启动困难救援：把眼前任务缩成可编辑的 2、5 或 10 分钟最小动作，完成后选择继续原任务或稍后再做
 - 可安装到 iPhone 主屏幕的 PWA，支持后台浏览器推送、测试通知和多设备订阅
+- 手机通知可直达对应任务，并可立即开始、完成、稍后 10/30 分钟提醒或进入启动困难救援
 - 收集箱与任务状态筛选
 - 日、周、月日历视图
 - 项目阶段与进度展示

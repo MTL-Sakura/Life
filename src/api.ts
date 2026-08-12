@@ -84,6 +84,11 @@ export const api = {
     await request('tasks.delete', { method: 'DELETE', body: { id } })
   },
 
+  async snoozeTask(id: number, minutes: 10 | 30): Promise<Task> {
+    const result = await request<{ task: Task }>('tasks.snooze', { method: 'POST', body: { id, minutes } })
+    return result.task
+  },
+
   async skipRecurringTask(id: number): Promise<BootstrapData> {
     return request<BootstrapData>('tasks.recurrence.skip', { method: 'POST', body: { id } })
   },

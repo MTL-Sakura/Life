@@ -85,6 +85,7 @@ export type Task = {
   windowEnd?: string | null
   scheduleBlocks?: ScheduleBlock[]
   reminderMinutes?: number | null
+  reminderAt?: string | null
   completedAt?: string | null
   subtasks?: Subtask[]
 }

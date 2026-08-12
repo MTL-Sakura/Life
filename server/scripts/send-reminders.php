@@ -66,8 +66,8 @@ function sendTaskReminders(PDO $db, Mailer $mailer, ?PushNotifier $push, DateTim
             try {
                 $result = $push->sendToUser($db, (int) $task['user_id'], [
                     'title' => "{$time} · {$task['title']}",
-                    'body' => '快到计划时间了。先打开任务，只做第一步。',
-                    'url' => '/?task=' . (int) $task['id'],
+                    'body' => '该看看这项安排了。打开任务，决定现在开始还是稍后。',
+                    'url' => '/now?task=' . (int) $task['id'] . '&from=push',
                     'tag' => 'task-' . (int) $task['id'] . '-' . $start->format('YmdHi'),
                 ]);
                 if ($result['sent'] > 0) {
