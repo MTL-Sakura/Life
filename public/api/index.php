@@ -451,6 +451,7 @@ switch ($action) {
 
     case 'rescue.start':
         Http::requireMethod('POST');
+        closeExpiredFocusSessions($db, $userId, $timezone);
         $input = Http::input();
         $taskId = (int) ($input['taskId'] ?? 0);
         $reason = (string) ($input['reason'] ?? '');
@@ -475,6 +476,7 @@ switch ($action) {
 
     case 'rescue.finish':
         Http::requireMethod('POST');
+        closeExpiredFocusSessions($db, $userId, $timezone);
         $input = Http::input();
         $taskId = (int) ($input['taskId'] ?? 0);
         $outcome = (string) ($input['outcome'] ?? '');
@@ -493,6 +495,7 @@ switch ($action) {
     case 'focus.resume':
     case 'focus.end':
         Http::requireMethod('POST');
+        closeExpiredFocusSessions($db, $userId, $timezone);
         $input = Http::input();
         $taskId = (int) ($input['taskId'] ?? 0);
         $task = ownedRow($db, 'tasks', $taskId, $userId);
@@ -705,6 +708,39 @@ switch ($action) {
         Http::requireMethod('GET');
         Http::json((new BackupManager())->export($db, $userId, $timezone));
 
+    case 'data.clear':
+        Http::requireMethod('POST');
+        $input = Http::input();
+        if (($input['confirmation'] ?? null) !== 'DELETE_TASKS_AND_HABITS') {
+            Http::json(['error' => '请确认要清空全部任务和习惯。'], 422);
+        }
+        (new BackupManager())->create($db, $userId, $timezone, 'pre_restore');
+        $db->beginTransaction();
+        try {
+            $db->prepare(
+                "DELETE plan_import_items FROM plan_import_items
+                 INNER JOIN plan_imports ON plan_imports.id = plan_import_items.plan_import_id
+                 WHERE plan_imports.user_id = ? AND plan_import_items.entity_type IN ('task', 'habit')"
+            )->execute([$userId]);
+            $db->prepare('DELETE FROM ai_plans WHERE user_id = ?')->execute([$userId]);
+            $db->prepare('DELETE FROM daily_task_decisions WHERE user_id = ?')->execute([$userId]);
+            $db->prepare('DELETE FROM tasks WHERE user_id = ?')->execute([$userId]);
+            $db->prepare('DELETE FROM habits WHERE user_id = ?')->execute([$userId]);
+            $db->prepare('DELETE FROM task_series WHERE user_id = ?')->execute([$userId]);
+            $db->prepare(
+                "UPDATE plan_imports
+                 SET imported_counts = JSON_SET(imported_counts, '$.tasks', 0, '$.habits', 0)
+                 WHERE user_id = ?"
+            )->execute([$userId]);
+            $db->commit();
+        } catch (Throwable $error) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $error;
+        }
+        Http::json(bootstrapData($db, $userId, $timezone));
+
     case 'backup.create':
         Http::requireMethod('POST');
         (new BackupManager())->create($db, $userId, $timezone, 'manual');
@@ -905,6 +941,7 @@ switch ($action) {
 
 function bootstrapData(PDO $db, int $userId, string $timezone): array
 {
+    closeExpiredFocusSessions($db, $userId, $timezone);
     ensureRecurringTaskSeries($db, $userId);
     ensureRecurringTaskContinuity($db, $userId, $timezone);
     $tasksStatement = $db->prepare(
@@ -1232,6 +1269,38 @@ function latestFocusSession(PDO $db, int $taskId, bool $forUpdate = false): ?arr
     $statement->execute([$taskId]);
     $session = $statement->fetch();
     return $session ?: null;
+}
+
+function closeExpiredFocusSessions(PDO $db, int $userId, string $timezone): void
+{
+    $utc = new DateTimeZone('UTC');
+    $dayStart = (new DateTimeImmutable('today', new DateTimeZone($timezone)))->setTimezone($utc);
+    $statement = $db->prepare(
+        "SELECT * FROM focus_sessions
+         WHERE user_id = ? AND status IN ('running', 'paused') AND started_at < ?"
+    );
+    $statement->execute([$userId, $dayStart->format('Y-m-d H:i:s')]);
+    $sessions = $statement->fetchAll();
+    if ($sessions === []) {
+        return;
+    }
+
+    $close = $db->prepare(
+        "UPDATE focus_sessions SET status = 'completed', elapsed_seconds = ?, last_resumed_at = NULL, ended_at = ? WHERE id = ?"
+    );
+    $resetTask = $db->prepare(
+        "UPDATE tasks SET status = CASE WHEN start_at IS NULL THEN 'inbox' ELSE 'planned' END
+         WHERE id = ? AND user_id = ? AND status = 'in_progress'"
+    );
+    foreach ($sessions as $session) {
+        $elapsed = max(0, (int) $session['elapsed_seconds']);
+        if ($session['status'] === 'running' && !empty($session['last_resumed_at'])) {
+            $resumedAt = new DateTimeImmutable((string) $session['last_resumed_at'], $utc);
+            $elapsed += max(0, $dayStart->getTimestamp() - $resumedAt->getTimestamp());
+        }
+        $close->execute([$elapsed, $dayStart->format('Y-m-d H:i:s'), (int) $session['id']]);
+        $resetTask->execute([(int) $session['task_id'], $userId]);
+    }
 }
 
 function focusSessionMap(PDO $db, array $taskIds): array

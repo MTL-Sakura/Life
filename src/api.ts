@@ -153,6 +153,13 @@ export const api = {
     return request<Record<string, unknown>>('data.export')
   },
 
+  async clearTasksAndHabits(): Promise<BootstrapData> {
+    return request<BootstrapData>('data.clear', {
+      method: 'POST',
+      body: { confirmation: 'DELETE_TASKS_AND_HABITS' },
+    })
+  },
+
   async createBackup(): Promise<BootstrapData> {
     return request<BootstrapData>('backup.create', { method: 'POST', body: {} })
   },

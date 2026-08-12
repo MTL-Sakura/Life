@@ -15,6 +15,14 @@ final class Views
         $end = self::localDate($row['end_at'] ?? null, $timezone);
         $due = self::localDate($row['due_at'] ?? null, $timezone);
         $completed = self::localDate($row['completed_at'] ?? null, $timezone);
+        $focusStarted = $focusSession === null
+            ? null
+            : self::localDate($focusSession['started_at'] ?? null, $timezone);
+        $today = new DateTimeImmutable('today', new DateTimeZone($timezone));
+        if ($focusStarted !== null && $focusStarted->format('Y-m-d') !== $today->format('Y-m-d')) {
+            $focusSession = null;
+            $focusStarted = null;
+        }
 
         return [
             'id' => (int) $row['id'],
@@ -44,7 +52,7 @@ final class Views
                 'rescueReason' => $focusSession['rescue_reason'] ?? null,
                 'rescueStep' => $focusSession['rescue_step'] ?? null,
                 'rescueOutcome' => $focusSession['rescue_outcome'] ?? null,
-                'startedAt' => self::localDate($focusSession['started_at'], $timezone)?->format(DATE_ATOM),
+                'startedAt' => $focusStarted?->format(DATE_ATOM),
                 'lastResumedAt' => self::localDate($focusSession['last_resumed_at'] ?? null, $timezone)?->format(DATE_ATOM),
                 'endedAt' => self::localDate($focusSession['ended_at'] ?? null, $timezone)?->format(DATE_ATOM),
             ],

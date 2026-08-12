@@ -586,6 +586,30 @@ function isOpenTask(task: Task) {
   return !task.completed && !task.skipped && task.status !== 'cancelled'
 }
 
+function morningFocusTaskOptions(tasks: Task[]) {
+  const today = berlinIsoDate()
+  const seen = new Set<string>()
+
+  return tasks
+    .filter((task) => isOpenTask(task) && (task.unscheduled || taskCalendarDate(task) === today))
+    .sort((left, right) => {
+      const leftToday = taskCalendarDate(left) === today ? 0 : 1
+      const rightToday = taskCalendarDate(right) === today ? 0 : 1
+      return leftToday - rightToday
+        || taskPriorityWeight(left) - taskPriorityWeight(right)
+        || (taskStartMinutes(left) ?? 24 * 60) - (taskStartMinutes(right) ?? 24 * 60)
+    })
+    .filter((task) => {
+      const key = task.recurrenceSeriesId
+        ? `series:${task.recurrenceSeriesId}`
+        : `task:${task.projectId ?? task.project}:${task.title.trim().toLocaleLowerCase()}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .slice(0, 20)
+}
+
 function taskPriorityWeight(task: Task) {
   return task.priority === 'high' ? 0 : task.priority === 'medium' ? 1 : 2
 }
@@ -1782,15 +1806,11 @@ function MorningCheckinModal({ rhythm, tasks, onClose, onSave, onSkip }: {
   onSave: (input: MorningCheckinInput, organize: boolean) => Promise<void>
   onSkip: () => Promise<void>
 }) {
-  const taskOptions = tasks
-    .filter((task) => isOpenTask(task) && (task.unscheduled || (taskCalendarDate(task) ?? '9999-12-31') <= berlinIsoDate()))
-    .sort((left, right) => {
-      const leftToday = taskCalendarDate(left) === berlinIsoDate() ? 0 : 1
-      const rightToday = taskCalendarDate(right) === berlinIsoDate() ? 0 : 1
-      return leftToday - rightToday || taskPriorityWeight(left) - taskPriorityWeight(right) || (taskStartMinutes(left) ?? 24 * 60) - (taskStartMinutes(right) ?? 24 * 60)
-    })
-    .slice(0, 40)
-  const suggestedTaskId = rhythm.focusTaskId ?? recommendNowTask(tasks)?.task.id ?? taskOptions[0]?.id ?? null
+  const taskOptions = morningFocusTaskOptions(tasks)
+  const recommendedTaskId = rhythm.focusTaskId ?? recommendNowTask(tasks)?.task.id ?? null
+  const suggestedTaskId = recommendedTaskId !== null && taskOptions.some((task) => task.id === recommendedTaskId)
+    ? recommendedTaskId
+    : taskOptions[0]?.id ?? null
   const [wakeTime, setWakeTime] = useState(rhythm.wakeTime ?? berlinClockTime())
   const [hadBreakfast, setHadBreakfast] = useState(rhythm.hadBreakfast ?? false)
   const [energy, setEnergy] = useState(rhythm.morningEnergy ?? 3)
@@ -2462,7 +2482,7 @@ function ReviewPage({ summary, tasks, onAiPlan }: { summary: ReviewSummary; task
   )
 }
 
-function SettingsPage({ settings: initialSettings, browserPush, activeSection, dataCounts, planImports, backups, onSectionChange, onSave, onEnablePush, onDisablePush, onTestPush, onTestMail, onChangePassword, onExportData, onCreateBackup, onPreviewBackup, onPreviewStoredBackup, onRestoreBackup, onRestoreStoredBackup, onDownloadStoredBackup, onImportPlan, onDeletePlanImport, onLogout }: {
+function SettingsPage({ settings: initialSettings, browserPush, activeSection, dataCounts, planImports, backups, onSectionChange, onSave, onEnablePush, onDisablePush, onTestPush, onTestMail, onChangePassword, onExportData, onClearTasksAndHabits, onCreateBackup, onPreviewBackup, onPreviewStoredBackup, onRestoreBackup, onRestoreStoredBackup, onDownloadStoredBackup, onImportPlan, onDeletePlanImport, onLogout }: {
   settings: UserSettings
   browserPush: BrowserPushState
   activeSection: SettingsSectionKey
@@ -2477,6 +2497,7 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
   onTestMail: () => Promise<void>
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>
   onExportData: () => Promise<void>
+  onClearTasksAndHabits: () => Promise<void>
   onCreateBackup: () => Promise<void>
   onPreviewBackup: (backup: Record<string, unknown>) => Promise<BackupPreview>
   onPreviewStoredBackup: (id: number) => Promise<BackupPreview>
@@ -2510,6 +2531,8 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
   const [restorePassword, setRestorePassword] = useState('')
   const [backupError, setBackupError] = useState('')
   const [backupBusy, setBackupBusy] = useState(false)
+  const [clearingData, setClearingData] = useState(false)
+  const [clearDataError, setClearDataError] = useState('')
 
   useEffect(() => setSettings(initialSettings), [initialSettings])
 
@@ -2577,6 +2600,19 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
       await onExportData()
     } finally {
       setExporting(false)
+    }
+  }
+
+  async function clearTasksAndHabits() {
+    if (!window.confirm(`将永久删除 ${dataCounts.tasks} 个任务和 ${dataCounts.habits} 个习惯。系统会先自动创建完整服务器备份，项目、分类和设置会保留。确认继续？`)) return
+    setClearingData(true)
+    setClearDataError('')
+    try {
+      await onClearTasksAndHabits()
+    } catch (error) {
+      setClearDataError(error instanceof Error ? error.message : '清空失败。')
+    } finally {
+      setClearingData(false)
     }
   }
 
@@ -2821,7 +2857,7 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
                   <h3>服务器备份</h3>
                   {backups.map((backup) => (
                     <div className="plan-import-history-row" key={backup.id}>
-                      <div><strong>{{ manual: '手动', daily: '每日', weekly: '每周', pre_restore: '恢复前' }[backup.kind]}备份</strong><span>{taskMoment(backup.createdAt)} · {(backup.sizeBytes / 1024).toFixed(1)} KB</span></div>
+                      <div><strong>{{ manual: '手动', daily: '每日', weekly: '每周', pre_restore: '操作前' }[backup.kind]}备份</strong><span>{taskMoment(backup.createdAt)} · {(backup.sizeBytes / 1024).toFixed(1)} KB</span></div>
                       <button type="button" className="icon-button" title="下载" aria-label="下载备份" onClick={() => void onDownloadStoredBackup(backup)}><Download size={16} /></button>
                       <button type="button" className="outline-button" disabled={backupBusy} onClick={() => void selectStoredBackup(backup.id)}>恢复</button>
                     </div>
@@ -2865,6 +2901,12 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
                   ))}
                 </div>
               )}
+              <div className="settings-divider" />
+              <div className="data-danger-zone">
+                <div><Trash2 size={19} /><span><strong>清空任务和习惯</strong><small>操作前会自动创建完整服务器备份；项目、分类、账户和设置都会保留。</small></span></div>
+                <button type="button" className="danger-button" onClick={() => void clearTasksAndHabits()} disabled={clearingData || (dataCounts.tasks === 0 && dataCounts.habits === 0)}><Trash2 size={15} />{clearingData ? '清空中…' : '全部清空'}</button>
+              </div>
+              {clearDataError && <p className="form-error">{clearDataError}</p>}
             </section>
           )}
 
@@ -3846,6 +3888,20 @@ export default function App() {
     }
   }
 
+  async function clearTasksAndHabits() {
+    if (demoMode) {
+      setTasks([])
+      setHabits([])
+      setDailyRhythm((current) => ({ ...current, focusTaskId: null, focusTaskTitle: null }))
+    } else {
+      applyBootstrap(await api.clearTasksAndHabits())
+    }
+    setSelectedTaskId(null)
+    setCompletionTaskId(null)
+    setRescueTaskId(null)
+    showToast(demoMode ? '演示任务和习惯已清空' : '任务和习惯已清空，清空前备份已保存')
+  }
+
   async function createBackup() {
     if (demoMode) {
       showToast('演示模式不会写入服务器备份')
@@ -4169,7 +4225,7 @@ export default function App() {
         {page === 'projects' && <ProjectsPage projects={projectItems} onNewProject={() => setEditor({ type: 'project' })} />}
         {page === 'habits' && <HabitsPage habits={habits} toggleHabit={toggleHabit} onNewHabit={() => setEditor({ type: 'habit' })} />}
         {page === 'review' && <ReviewPage summary={review} tasks={tasks} onAiPlan={() => openAiPlanner('next_week')} />}
-        {page === 'settings' && <SettingsPage settings={settings} browserPush={browserPush} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} backups={backups} onSectionChange={navigateSettings} onSave={saveSettings} onEnablePush={enableBrowserPush} onDisablePush={disableBrowserPush} onTestPush={testBrowserPush} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onCreateBackup={createBackup} onPreviewBackup={previewBackup} onPreviewStoredBackup={previewStoredBackup} onRestoreBackup={restoreBackup} onRestoreStoredBackup={restoreStoredBackup} onDownloadStoredBackup={downloadStoredBackup} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
+        {page === 'settings' && <SettingsPage settings={settings} browserPush={browserPush} activeSection={settingsSection} dataCounts={{ tasks: tasks.length, projects: projectItems.length, habits: habits.length, categories: categories.length }} planImports={planImports} backups={backups} onSectionChange={navigateSettings} onSave={saveSettings} onEnablePush={enableBrowserPush} onDisablePush={disableBrowserPush} onTestPush={testBrowserPush} onTestMail={testMail} onChangePassword={changePassword} onExportData={exportData} onClearTasksAndHabits={clearTasksAndHabits} onCreateBackup={createBackup} onPreviewBackup={previewBackup} onPreviewStoredBackup={previewStoredBackup} onRestoreBackup={restoreBackup} onRestoreStoredBackup={restoreStoredBackup} onDownloadStoredBackup={downloadStoredBackup} onImportPlan={importPlan} onDeletePlanImport={deletePlanImport} onLogout={logout} />}
       </div>
       <MobileNav page={page} setPage={navigate} />
       {selectedTask && <TaskDetail task={selectedTask} idlePermission={idlePermission} onClose={() => setSelectedTaskId(null)} onEdit={() => editTask(selectedTask.id)} onSchedule={() => editTask(selectedTask.id, true)} onDelete={() => deleteTask(selectedTask.id)} onToggle={() => toggleTask(selectedTask.id)} onStart={() => startNowTask(selectedTask)} onComplete={() => { setSelectedTaskId(null); setCompletionTaskId(selectedTask.id) }} onSnooze={(minutes) => snoozeTaskReminder(selectedTask, minutes)} onRescue={() => { setSelectedTaskId(null); setRescueTaskId(selectedTask.id) }} onToggleSubtask={(subtask) => toggleSubtask(selectedTask.id, subtask)} onFocusAction={(action) => focusTask(selectedTask.id, action)} onSkipOccurrence={() => skipRecurringTask(selectedTask.id)} onPauseSeries={(date) => pauseRecurringTask(selectedTask.id, date)} />}
