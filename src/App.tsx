@@ -2969,10 +2969,19 @@ export default function App() {
     const url = new URL(window.location.href)
     const taskId = Number(url.searchParams.get('task'))
     if (!Number.isInteger(taskId) || !tasks.some((task) => task.id === taskId)) return
+    const minutes = berlinClockMinutes()
+    const prompt = dailyRhythm.morningStatus === 'pending' && minutes < 12 * 60
+      ? 'morning'
+      : !dailyRhythm.closedAt && minutes >= 22 * 60 + 30
+        ? 'evening'
+        : null
+    if (prompt !== null) dailyPrompted.current = `${dailyRhythm.date}-${prompt}`
+    setDailyFlow(null)
     setSelectedTaskId(taskId)
     url.searchParams.delete('task')
+    url.searchParams.delete('from')
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
-  }, [loggedIn, tasks])
+  }, [dailyRhythm.closedAt, dailyRhythm.date, dailyRhythm.morningStatus, loggedIn, tasks])
 
   useEffect(() => {
     if (loggedIn !== true) return
@@ -4167,8 +4176,8 @@ export default function App() {
       {editor?.type === 'task' && <TaskEditor task={editorTask} schedule={editor.schedule} projects={projectItems} categories={categories} defaultReminderMinutes={settings.taskReminderMinutes} onClose={() => setEditor(null)} onSave={saveTask} />}
       {editor?.type === 'project' && <ProjectEditor onClose={() => setEditor(null)} onSave={saveProject} />}
       {editor?.type === 'habit' && <HabitEditor onClose={() => setEditor(null)} onSave={saveHabit} />}
-      {dailyFlow === 'morning' && <MorningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={saveMorningCheckin} onSkip={skipMorningCheckin} />}
-      {dailyFlow === 'evening' && <EveningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={closeDailyRhythm} />}
+      {dailyFlow === 'morning' && !selectedTask && <MorningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={saveMorningCheckin} onSkip={skipMorningCheckin} />}
+      {dailyFlow === 'evening' && !selectedTask && <EveningCheckinModal rhythm={dailyRhythm} tasks={tasks} onClose={() => setDailyFlow(null)} onSave={closeDailyRhythm} />}
       {completionTask && <CompletionCalibrationModal task={completionTask} onClose={() => setCompletionTaskId(null)} onSave={completeTask} />}
       {rescueTask && <RescueSetupModal task={rescueTask} onClose={() => setRescueTaskId(null)} onStart={startRescue} />}
       {rebalanceSetupOpen && <RebalanceSetupModal tasks={tasks} dailyRhythm={dailyRhythm} settings={settings} onClose={() => setRebalanceSetupOpen(false)} onGenerate={startRebalance} />}
