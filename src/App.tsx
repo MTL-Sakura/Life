@@ -521,6 +521,64 @@ function calendarOccurrences(tasks: Task[], dates: string[]) {
   })
 }
 
+function calendarTimeMinutes(value: string | null) {
+  if (!value || !/^\d{2}:\d{2}$/.test(value)) return null
+  const [hours, minutes] = value.split(':').map(Number)
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null
+  return hours * 60 + minutes
+}
+
+function calendarOccurrenceRange(occurrence: CalendarOccurrence) {
+  const startMinutes = calendarTimeMinutes(occurrence.time)
+  if (startMinutes === null) return null
+  const explicitEnd = calendarTimeMinutes(occurrence.endTime)
+  const fallbackEnd = startMinutes + Math.max(15, occurrence.task.duration || 30)
+  const endMinutes = explicitEnd !== null && explicitEnd > startMinutes ? explicitEnd : fallbackEnd
+  return {
+    occurrence,
+    startMinutes,
+    endMinutes: Math.min(24 * 60, Math.max(startMinutes + 15, endMinutes)),
+  }
+}
+
+type PositionedCalendarOccurrence = NonNullable<ReturnType<typeof calendarOccurrenceRange>> & {
+  lane: number
+  laneCount: number
+}
+
+function positionCalendarOccurrences(dayOccurrences: CalendarOccurrence[]) {
+  const ranges = dayOccurrences
+    .map(calendarOccurrenceRange)
+    .filter((item): item is NonNullable<typeof item> => item !== null)
+    .sort((left, right) => left.startMinutes - right.startMinutes || left.endMinutes - right.endMinutes)
+  const clusters: typeof ranges[] = []
+  let cluster: typeof ranges = []
+  let clusterEnd = -1
+
+  for (const range of ranges) {
+    if (cluster.length > 0 && range.startMinutes >= clusterEnd) {
+      clusters.push(cluster)
+      cluster = []
+      clusterEnd = -1
+    }
+    cluster.push(range)
+    clusterEnd = Math.max(clusterEnd, range.endMinutes)
+  }
+  if (cluster.length > 0) clusters.push(cluster)
+
+  return clusters.flatMap((items) => {
+    const laneEnds: number[] = []
+    const withLanes = items.map((item) => {
+      let lane = laneEnds.findIndex((endMinutes) => endMinutes <= item.startMinutes)
+      if (lane === -1) lane = laneEnds.length
+      laneEnds[lane] = item.endMinutes
+      return { ...item, lane }
+    })
+    const laneCount = Math.max(1, laneEnds.length)
+    return withLanes.map((item): PositionedCalendarOccurrence => ({ ...item, laneCount }))
+  })
+}
+
 function taskReviewDate(task: Task) {
   return task.startAt?.slice(0, 10)
     ?? task.dueAt?.slice(0, 10)
@@ -2306,15 +2364,26 @@ function InboxPage({ tasks, quickEntry, setQuickEntry, addTask, toggleTask, onNe
 function CalendarPage({ tasks, onNewTask, onOpenTask }: { tasks: Task[]; onNewTask: () => void; onOpenTask: (id: number) => void }) {
   const [view, setView] = useState<'day' | 'week' | 'month'>('week')
   const dates = currentWeekDates()
-  const hours = ['09:00', '11:00', '13:00', '15:00', '17:00', '19:00']
   const todayIndex = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)).indexOf(berlinIsoDate())
   const monthCells = currentMonthCells()
+  const weekDateValues = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index))
   const visibleDates = Array.from(new Set([
-    ...Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)),
+    ...weekDateValues,
     ...monthCells.flatMap((cell) => cell.date ? [cell.date] : []),
   ]))
   const occurrences = calendarOccurrences(tasks, visibleDates)
   const scheduledDates = new Set(occurrences.map((occurrence) => occurrence.date))
+  const displayedDayIndices = view === 'day' ? [todayIndex >= 0 ? todayIndex : 0] : Array.from({ length: 7 }, (_, index) => index)
+  const displayedDates = new Set(displayedDayIndices.map((index) => weekDateValues[index]))
+  const timelineOccurrences = occurrences.filter((occurrence) => displayedDates.has(occurrence.date) && calendarTimeMinutes(occurrence.time) !== null)
+  const timelineRanges = timelineOccurrences.map(calendarOccurrenceRange).filter((item): item is NonNullable<typeof item> => item !== null)
+  const earliestMinutes = Math.min(9 * 60, ...timelineRanges.map((item) => item.startMinutes))
+  const latestMinutes = Math.max(21 * 60, ...timelineRanges.map((item) => item.endMinutes))
+  const timelineStart = Math.max(0, Math.floor(earliestMinutes / 60) * 60)
+  const timelineEnd = Math.min(24 * 60, Math.max(timelineStart + 60, Math.ceil(latestMinutes / 60) * 60))
+  const calendarHourHeight = 56
+  const timelineHeight = ((timelineEnd - timelineStart) / 60) * calendarHourHeight
+  const timelineHours = Array.from({ length: Math.floor((timelineEnd - timelineStart) / 60) + 1 }, (_, index) => timelineStart + index * 60)
 
   return (
     <div className="page-content">
@@ -2341,33 +2410,45 @@ function CalendarPage({ tasks, onNewTask, onOpenTask }: { tasks: Task[]; onNewTa
           ))}
         </section>
       ) : (
-        <section className={`week-calendar ${view === 'day' ? 'day-view' : ''}`}>
+        <section className={`week-calendar ${view === 'day' ? 'day-view' : ''}`} style={{ '--calendar-columns': displayedDayIndices.length } as React.CSSProperties}>
           <div className="week-head-spacer" />
-          {weekDays.map((day, index) => (
-            <div className={`week-day-head ${index === todayIndex ? 'today' : ''}`} key={day}><span>周{day}</span><strong>{dates[index]}</strong></div>
+          {displayedDayIndices.map((index) => (
+            <div className={`week-day-head ${index === todayIndex ? 'today' : ''}`} key={weekDays[index]}><span>周{weekDays[index]}</span><strong>{dates[index]}</strong></div>
           ))}
-          {hours.map((hour, hourIndex) => (
-            <div className="calendar-row" key={hour}>
-              <span className="hour-label">{hour}</span>
-              {weekDays.map((day, dayIndex) => (
-                <div className={`calendar-cell ${dayIndex === todayIndex ? 'today-column' : ''}`} key={`${hour}-${day}`}>
-                  {(() => {
-                    const startHour = Number(hour.slice(0, 2))
-                    const endHour = hourIndex === hours.length - 1 ? 24 : Number(hours[hourIndex + 1].slice(0, 2))
-                    const date = currentWeekDateIso(dayIndex)
-                    const cellTasks = occurrences.filter((occurrence) => {
-                      const time = occurrence.time
-                      const taskHour = time ? Number(time.slice(0, 2)) : -1
-                      return occurrence.date === date && taskHour >= startHour && taskHour < endHour
-                    })
-                    return cellTasks.length > 0 ? <div className="calendar-event-stack">{cellTasks.map((occurrence) => (
-                      <button type="button" className={`calendar-event ${occurrence.projected ? 'is-projected' : ''} ${occurrence.task.skipped ? 'is-skipped' : ''}`} onClick={() => onOpenTask(occurrence.task.id)} style={{ '--event-color': occurrence.task.color } as React.CSSProperties} key={occurrence.key}><strong>{occurrence.task.title}{occurrence.task.skipped ? ' · 已跳过' : ''}</strong><span>{occurrence.time}–{occurrence.endTime ?? '待定'}</span></button>
-                    ))}</div> : null
-                  })()}
-                </div>
-              ))}
-            </div>
-          ))}
+          <div className="calendar-time-axis" style={{ height: timelineHeight }}>
+            {timelineHours.map((minutes, index) => index % 2 === 0 && <span style={{ top: (minutes - timelineStart) / 60 * calendarHourHeight }} key={minutes}>{String(Math.floor(minutes / 60)).padStart(2, '0')}:00</span>)}
+          </div>
+          {displayedDayIndices.map((dayIndex) => {
+            const date = weekDateValues[dayIndex]
+            const positioned = positionCalendarOccurrences(timelineOccurrences.filter((occurrence) => occurrence.date === date))
+            return (
+              <div className={`calendar-day-column ${dayIndex === todayIndex ? 'today-column' : ''}`} style={{ height: timelineHeight }} key={date}>
+                {timelineHours.map((minutes) => <i className="calendar-hour-line" style={{ top: (minutes - timelineStart) / 60 * calendarHourHeight }} key={minutes} />)}
+                {positioned.map(({ occurrence, startMinutes, endMinutes, lane, laneCount }) => {
+                  const top = (startMinutes - timelineStart) / 60 * calendarHourHeight
+                  const height = Math.max(26, (endMinutes - startMinutes) / 60 * calendarHourHeight - 3)
+                  return (
+                    <button
+                      type="button"
+                      className={`calendar-event calendar-event-positioned ${height < 38 ? 'compact' : ''} ${occurrence.projected ? 'is-projected' : ''} ${occurrence.task.skipped ? 'is-skipped' : ''}`}
+                      onClick={() => onOpenTask(occurrence.task.id)}
+                      style={{
+                        '--event-color': occurrence.task.color,
+                        top,
+                        height,
+                        left: `calc(5px + (100% - 10px) * ${lane} / ${laneCount})`,
+                        width: `calc((100% - 10px) / ${laneCount} - 3px)`,
+                      } as React.CSSProperties}
+                      key={occurrence.key}
+                    >
+                      <strong>{occurrence.task.title}{occurrence.task.skipped ? ' · 已跳过' : ''}</strong>
+                      <span>{occurrence.time}–{occurrence.endTime ?? '待定'}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )
+          })}
         </section>
       )}
     </div>
