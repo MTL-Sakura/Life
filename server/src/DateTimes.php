@@ -10,6 +10,23 @@ use Throwable;
 
 final class DateTimes
 {
+    public static function isValidTimezone(?string $timezone): bool
+    {
+        return $timezone !== null && in_array($timezone, DateTimeZone::listIdentifiers(), true);
+    }
+
+    /**
+     * A stored timezone that PHP cannot load would break every page and the
+     * reminder cron, so fall back instead of throwing.
+     */
+    public static function safeTimezone(?string $timezone, ?string $fallback = null): string
+    {
+        if (self::isValidTimezone($timezone)) {
+            return (string) $timezone;
+        }
+        return self::isValidTimezone($fallback) ? (string) $fallback : 'Europe/Berlin';
+    }
+
     public static function toUtc(?string $value, string $timezone): ?string
     {
         if ($value === null || trim($value) === '') {
