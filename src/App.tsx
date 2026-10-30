@@ -58,6 +58,7 @@ import {
 import { api } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
 import { buildPlanImportPrompt } from './planImportPrompt'
+import { appTimezone, setAppTimezone, timezoneLabel } from './timezone'
 import type { AiPlan, AiPlanScope, BackupPreview, BackupRecord, BootstrapData, Category, DailyRhythm, EveningDecision, FailureReason, Habit, MorningCheckinInput, PageKey, PlanImportBatch, PlanImportCounts, PlanImportDocument, Project, RebalanceInput, RescueInput, RescueOutcome, RescueReason, ReviewSummary, Subtask, Task, UserSettings } from './types'
 
 const navigation = [
@@ -308,7 +309,7 @@ function pathForPage(page: PageKey, settingsSection: SettingsSectionKey = 'accou
 
 function berlinDate() {
   return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Europe/Berlin',
+    timeZone: appTimezone(),
     month: 'long',
     day: 'numeric',
     weekday: 'long',
@@ -326,7 +327,7 @@ type DashboardNotification = {
 
 function notificationTime(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Europe/Berlin',
+    timeZone: appTimezone(),
     month: 'numeric',
     day: 'numeric',
     hour: '2-digit',
@@ -406,7 +407,7 @@ function currentWeekDateIso(dayIndex: number) {
 
 function berlinIsoDate() {
   return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Berlin',
+    timeZone: appTimezone(),
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -597,7 +598,7 @@ function recurrenceLabel(rule?: string | null) {
 function taskMoment(value?: string | null) {
   if (!value) return '待安排'
   return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Europe/Berlin',
+    timeZone: appTimezone(),
     month: 'long',
     day: 'numeric',
     hour: '2-digit',
@@ -651,7 +652,7 @@ function timeToMinutes(value?: string | null) {
 
 function berlinClockMinutes(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Berlin',
+    timeZone: appTimezone(),
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
@@ -866,7 +867,7 @@ function CompletionCalibrationModal({ task, onClose, onSave }: { task: Task; onC
 
 function aiPlanDateLabel(startAt: string) {
   return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Europe/Berlin',
+    timeZone: appTimezone(),
     month: 'long',
     day: 'numeric',
     weekday: 'short',
@@ -875,7 +876,7 @@ function aiPlanDateLabel(startAt: string) {
 
 function aiPlanTimeLabel(startAt: string, endAt: string) {
   const formatter = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Europe/Berlin',
+    timeZone: appTimezone(),
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
@@ -1523,7 +1524,7 @@ function LoginScreen({ onLogin }: { onLogin: (username: string, password: string
         <div className="brand-mark large"><span>行</span></div>
         <p className="eyebrow">LIFE DASHBOARD</p>
         <h1>人生看板</h1>
-        <p className="login-date">{berlinDate()} · 柏林</p>
+        <p className="login-date">{berlinDate()} · {timezoneLabel()}</p>
         <form onSubmit={submit} className="login-form">
           <label>
             <span>用户名</span>
@@ -1585,7 +1586,7 @@ function Sidebar({ page, setPage, inboxCount, displayName }: { page: PageKey; se
           <div className="avatar">{displayName.slice(0, 1).toUpperCase()}</div>
           <div>
             <strong>{displayName}</strong>
-            <span>柏林时间</span>
+            <span>{timezoneLabel()}时间</span>
           </div>
           <MoreHorizontal size={17} />
         </div>
@@ -3358,6 +3359,7 @@ export default function App() {
   }, [])
 
   function applyBootstrap(data: BootstrapData) {
+    setAppTimezone(data.settings?.timezone)
     setTasks(data.tasks)
     setHabits(data.habits)
     setProjectItems(data.projects)
@@ -3465,7 +3467,7 @@ export default function App() {
     const targetStart = scope === 'next_week' ? shiftIsoDate(currentWeekDateIso(0), 7) : today
     const targetDays = scope === 'next_week' ? 7 : 1
     const nowParts = new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Europe/Berlin',
+      timeZone: appTimezone(),
       hour: '2-digit',
       minute: '2-digit',
       hourCycle: 'h23',
@@ -4132,8 +4134,12 @@ export default function App() {
 
   async function saveSettings(nextSettings: UserSettings) {
     if (!demoMode) await api.updateSettings(nextSettings)
+    const timezoneChanged = nextSettings.timezone !== appTimezone()
+    setAppTimezone(nextSettings.timezone)
     setSettings(nextSettings)
     showToast('设置已保存')
+    // Task times come from the server already converted to the account timezone.
+    if (timezoneChanged && !demoMode) void api.bootstrap().then(applyBootstrap).catch(() => undefined)
   }
 
   async function testMail() {

@@ -190,7 +190,7 @@ final class BackupManager
             $db->prepare('UPDATE users SET email = ?, display_name = ?, timezone = ? WHERE id = ?')->execute([
                 (string) ($account['email'] ?? ''),
                 (string) ($account['display_name'] ?? 'Sakura'),
-                (string) ($account['timezone'] ?? $timezone),
+                DateTimes::safeTimezone(isset($account['timezone']) ? (string) $account['timezone'] : null, $timezone),
                 $userId,
             ]);
             $db->commit();
