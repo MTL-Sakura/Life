@@ -3,10 +3,20 @@
 declare(strict_types=1);
 
 use Life\Database;
+use Life\DateTimes;
 use Life\Mailer;
 use Life\PushNotifier;
+use Life\RecurringTasks;
 
 require dirname(__DIR__) . '/bootstrap.php';
+
+// The cron runs every minute while a slow SMTP server can take longer than
+// that; overlapping runs would send the same reminder twice.
+$lock = fopen(sys_get_temp_dir() . '/life-dashboard-reminders.lock', 'c');
+if ($lock !== false && !flock($lock, LOCK_EX | LOCK_NB)) {
+    echo "Previous reminder run is still active.\n";
+    exit(0);
+}
 
 $db = Database::connection();
 $mailer = new Mailer();
@@ -20,9 +30,25 @@ if (PushNotifier::configured()) {
     }
 }
 
+generateRecurringTasks($db);
 sendTaskReminders($db, $mailer, $push, $nowUtc);
 sendDailySummaries($db, $mailer, $push, $nowUtc);
 sendOverdueSummaries($db, $mailer, $push, $nowUtc);
+
+/**
+ * Recurring occurrences used to be created only when the dashboard was opened,
+ * so a few days away from the app meant no tasks and no reminders.
+ */
+function generateRecurringTasks(PDO $db): void
+{
+    foreach ($db->query('SELECT id, timezone FROM users ORDER BY id')->fetchAll() as $user) {
+        try {
+            RecurringTasks::ensureContinuity($db, (int) $user['id'], DateTimes::safeTimezone($user['timezone']));
+        } catch (Throwable $error) {
+            error_log("Recurring tasks for user {$user['id']} failed: {$error}");
+        }
+    }
+}
 
 function sendTaskReminders(PDO $db, Mailer $mailer, ?PushNotifier $push, DateTimeImmutable $nowUtc): void
 {
@@ -49,12 +75,12 @@ function sendTaskReminders(PDO $db, Mailer $mailer, ?PushNotifier $push, DateTim
     $markEmailSent = $db->prepare('UPDATE tasks SET reminder_sent_at = ? WHERE id = ? AND reminder_sent_at IS NULL');
     $markPushSent = $db->prepare('UPDATE tasks SET push_reminder_sent_at = ? WHERE id = ? AND push_reminder_sent_at IS NULL');
     foreach ($statement->fetchAll() as $task) {
-        $localDate = $nowUtc->setTimezone(new DateTimeZone($task['timezone']))->format('Y-m-d');
+        $localDate = $nowUtc->setTimezone(new DateTimeZone(DateTimes::safeTimezone($task['timezone'])))->format('Y-m-d');
         if (dayClosed($db, (int) $task['user_id'], $localDate)) {
             continue;
         }
         $start = (new DateTimeImmutable($task['start_at'], new DateTimeZone('UTC')))
-            ->setTimezone(new DateTimeZone($task['timezone']));
+            ->setTimezone(new DateTimeZone(DateTimes::safeTimezone($task['timezone'])));
         $time = $start->format('H:i');
         $title = htmlspecialchars($task['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
@@ -106,7 +132,7 @@ function sendDailySummaries(PDO $db, Mailer $mailer, ?PushNotifier $push, DateTi
     )->fetchAll();
 
     foreach ($users as $user) {
-        $localNow = $nowUtc->setTimezone(new DateTimeZone($user['timezone']));
+        $localNow = $nowUtc->setTimezone(new DateTimeZone(DateTimes::safeTimezone($user['timezone'])));
         if (!withinFiveMinuteWindow($localNow, $user['daily_summary_time'])) {
             continue;
         }
@@ -174,7 +200,7 @@ function sendOverdueSummaries(PDO $db, Mailer $mailer, ?PushNotifier $push, Date
     )->fetchAll();
 
     foreach ($users as $user) {
-        $localNow = $nowUtc->setTimezone(new DateTimeZone($user['timezone']));
+        $localNow = $nowUtc->setTimezone(new DateTimeZone(DateTimes::safeTimezone($user['timezone'])));
         if (!withinFiveMinuteWindow($localNow, '09:00:00')) {
             continue;
         }

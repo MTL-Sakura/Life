@@ -50,7 +50,7 @@ final class Mailer
             . '<div style="background:#fbfaf7;border:1px solid #dedbd1;border-radius:8px;padding:28px">'
             . '<div style="font-size:12px;color:#496d5b;font-weight:700;margin-bottom:18px">人生看板</div>'
             . $content
-            . '<p style="margin:26px 0 0;color:#8a8d85;font-size:12px">按柏林时间发送</p>'
+            . '<p style="margin:26px 0 0;color:#8a8d85;font-size:12px">时间按你在看板中设置的时区显示</p>'
             . '</div></div></body></html>';
     }
 }
