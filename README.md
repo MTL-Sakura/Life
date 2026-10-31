@@ -42,6 +42,12 @@ pnpm dev
 pnpm build
 ```
 
+服务端测试只需要 PHP（含 pdo_sqlite），不需要数据库：
+
+```bash
+php tests/run.php
+```
+
 ## 应用架构
 
 - 前端：React、TypeScript、Vite
@@ -84,7 +90,7 @@ AI 每次只整理今天的未完成任务，并可纳入临近截止日期的�
 
 口述计划可以按照 [Life Plan JSON 格式](docs/PLAN_IMPORT.md)整理，然后在“设置 → 数据 → 计划导入”中粘贴或选择文件。示例见 [`public/examples/sakura-daily-routine-v3.json`](public/examples/sakura-daily-routine-v3.json)。导入只追加数据，不会清空现有看板；同一个 `importKey` 不能重复导入，导入后可在数据设置中整批撤销。
 
-浏览器推送和邮件提醒共用一个宝塔“计划任务”。为了让手机提醒误差不超过约 1 分钟，将执行周期设为“每 1 分钟”：
+浏览器推送、邮件提醒和循环任务的自动生成共用一个宝塔“计划任务”。为了让手机提醒误差不超过约 1 分钟，将执行周期设为“每 1 分钟”：
 
 ```bash
 /www/server/php/83/bin/php /www/wwwroot/life.snowmoon1824.top/server/scripts/send-reminders.php

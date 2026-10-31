@@ -14,6 +14,7 @@ use Life\Mailer;
 use Life\PlanImporter;
 use Life\PlanImportException;
 use Life\PushNotifier;
+use Life\RecurringTasks;
 use Life\Views;
 
 require dirname(__DIR__, 2) . '/server/bootstrap.php';
@@ -50,7 +51,7 @@ if ($action === 'session') {
 
 $user = Auth::requireUser($db);
 $userId = (int) $user['id'];
-$timezone = (string) $user['timezone'];
+$timezone = DateTimes::safeTimezone((string) $user['timezone'], Config::get('APP_TIMEZONE', 'Europe/Berlin'));
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
     Auth::assertCsrf();
@@ -349,8 +350,13 @@ switch ($action) {
     case 'tasks.delete':
         Http::requireMethod('DELETE', 'POST');
         $input = Http::input();
-        $statement = $db->prepare('DELETE FROM tasks WHERE id = ? AND user_id = ?');
-        $statement->execute([(int) ($input['id'] ?? 0), $userId]);
+        $taskStatement = $db->prepare('SELECT * FROM tasks WHERE id = ? AND user_id = ? LIMIT 1');
+        $taskStatement->execute([(int) ($input['id'] ?? 0), $userId]);
+        $task = $taskStatement->fetch();
+        if ($task) {
+            // Removing one occurrence must not let the series regenerate it.
+            RecurringTasks::deleteOccurrence($db, $task, $timezone);
+        }
         Http::json(['ok' => true]);
 
     case 'tasks.snooze':
@@ -948,7 +954,7 @@ switch ($action) {
                 ? $manager->stored($db, $userId, (int) ($input['id'] ?? 0))
                 : (array) ($input['backup'] ?? []);
             $manager->restore($db, $userId, $timezone, $backup);
-            Http::json(bootstrapData($db, $userId, (string) (($backup['data']['account']['timezone'] ?? null) ?: $timezone)));
+            Http::json(bootstrapData($db, $userId, DateTimes::safeTimezone((string) (($backup['data']['account']['timezone'] ?? null) ?: $timezone), $timezone)));
         } catch (RuntimeException $error) {
             Http::json(['error' => $error->getMessage()], 422);
         }
@@ -993,12 +999,16 @@ switch ($action) {
         if ($planningStart >= $planningEnd || $lunchStart >= $lunchEnd || $dinnerStart >= $dinnerEnd) {
             Http::json(['error' => '日程、午餐或晚餐的结束时间必须晚于开始时间。'], 422);
         }
+        $nextTimezone = (string) ($input['timezone'] ?? $timezone);
+        if (!DateTimes::isValidTimezone($nextTimezone)) {
+            Http::json(['error' => '时区设置不正确。'], 422);
+        }
         $db->beginTransaction();
         try {
             $db->prepare('UPDATE users SET display_name = ?, email = ?, timezone = ? WHERE id = ?')->execute([
                 trim((string) ($input['displayName'] ?? $user['display_name'])),
                 trim((string) ($input['email'] ?? $user['email'])),
-                (string) ($input['timezone'] ?? $timezone),
+                $nextTimezone,
                 $userId,
             ]);
             $db->prepare(
@@ -1329,70 +1339,17 @@ function endFocusSessionForEvening(PDO $db, int $taskId, string $now): void
 
 function ensureRecurringTaskSeries(PDO $db, int $userId): void
 {
-    $statement = $db->prepare(
-        'SELECT id, recurrence_source_task_id, recurrence_series_id, recurrence_rule
-         FROM tasks WHERE user_id = ? AND recurrence_rule IS NOT NULL AND recurrence_rule != ""
-         ORDER BY id'
-    );
-    $statement->execute([$userId]);
-    $seriesByTask = [];
-    $update = $db->prepare('UPDATE tasks SET recurrence_series_id = ? WHERE id = ? AND user_id = ?');
-    foreach ($statement->fetchAll() as $task) {
-        $taskId = (int) $task['id'];
-        $seriesId = nullableInt($task['recurrence_series_id'] ?? null);
-        $parentId = nullableInt($task['recurrence_source_task_id'] ?? null);
-        if ($seriesId === null && $parentId !== null) {
-            $seriesId = $seriesByTask[$parentId] ?? null;
-        }
-        if ($seriesId === null) {
-            $seriesId = createTaskSeries($db, $userId, (string) $task['recurrence_rule']);
-        }
-        $seriesByTask[$taskId] = $seriesId;
-        if (nullableInt($task['recurrence_series_id'] ?? null) !== $seriesId) {
-            $update->execute([$seriesId, $taskId, $userId]);
-        }
-    }
+    RecurringTasks::ensureSeries($db, $userId);
 }
 
 function createTaskSeries(PDO $db, int $userId, string $recurrenceRule): int
 {
-    $statement = $db->prepare('INSERT INTO task_series (user_id, recurrence_rule) VALUES (?, ?)');
-    $statement->execute([$userId, $recurrenceRule]);
-    return (int) $db->lastInsertId();
+    return RecurringTasks::createSeries($db, $userId, $recurrenceRule);
 }
 
 function ensureRecurringTaskContinuity(PDO $db, int $userId, string $timezone, ?string $throughDate = null): void
 {
-    $cutoffLocal = $throughDate === null
-        ? new DateTimeImmutable('tomorrow', new DateTimeZone($timezone))
-        : new DateTimeImmutable($throughDate, new DateTimeZone($timezone));
-    $cutoff = $cutoffLocal
-        ->setTimezone(new DateTimeZone('UTC'))
-        ->format('Y-m-d H:i:s');
-    $leafStatement = $db->prepare(
-        'SELECT task.* FROM tasks AS task
-         LEFT JOIN tasks AS child ON child.recurrence_source_task_id = task.id
-         WHERE task.user_id = ?
-           AND task.recurrence_rule IS NOT NULL
-           AND task.recurrence_rule != ""
-           AND child.id IS NULL
-           AND COALESCE(task.start_at, task.due_at, task.end_at) < ?
-         ORDER BY COALESCE(task.start_at, task.due_at, task.end_at)
-         LIMIT 200'
-    );
-
-    for ($round = 0; $round < 370; $round++) {
-        $leafStatement->execute([$userId, $cutoff]);
-        $leaves = $leafStatement->fetchAll();
-        if ($leaves === []) {
-            return;
-        }
-        foreach ($leaves as $leaf) {
-            createNextRecurringTask($db, $leaf, $timezone);
-        }
-    }
-
-    throw new RuntimeException('Recurring task continuity limit exceeded.');
+    RecurringTasks::ensureContinuity($db, $userId, $timezone, $throughDate);
 }
 
 function planImports(PDO $db, int $userId): array
@@ -1761,88 +1718,7 @@ function syncTaskSubtasks(PDO $db, int $taskId, array $input): void
 
 function createNextRecurringTask(PDO $db, array $task, string $timezone): ?int
 {
-    $rule = strtoupper((string) ($task['recurrence_rule'] ?? ''));
-    $interval = match (true) {
-        str_starts_with($rule, 'FREQ=DAILY') => new DateInterval('P1D'),
-        str_starts_with($rule, 'FREQ=WEEKLY') => new DateInterval('P1W'),
-        str_starts_with($rule, 'FREQ=MONTHLY') => new DateInterval('P1M'),
-        default => null,
-    };
-    if ($interval === null) {
-        return null;
-    }
-
-    $existing = $db->prepare('SELECT id FROM tasks WHERE recurrence_source_task_id = ? LIMIT 1');
-    $existing->execute([(int) $task['id']]);
-    $existingId = $existing->fetchColumn();
-    if ($existingId !== false) {
-        return (int) $existingId;
-    }
-
-    $nextStart = shiftedRecurringTimestamp($task['start_at'] ?? null, $interval);
-    $nextEnd = shiftedRecurringTimestamp($task['end_at'] ?? null, $interval);
-    $nextDue = shiftedRecurringTimestamp($task['due_at'] ?? null, $interval);
-    if ($nextStart === null && $nextEnd === null && $nextDue === null) {
-        return null;
-    }
-    $reminderMinutes = isset($task['reminder_minutes']) ? (int) $task['reminder_minutes'] : null;
-    $seriesId = nullableInt($task['recurrence_series_id'] ?? null);
-    $pausedUntil = null;
-    if ($seriesId !== null) {
-        $series = $db->prepare('SELECT paused_until FROM task_series WHERE id = ? AND user_id = ? LIMIT 1');
-        $series->execute([$seriesId, (int) $task['user_id']]);
-        $pausedUntil = nullableString($series->fetchColumn());
-    }
-    $nextMoment = $nextStart ?? $nextDue ?? $nextEnd;
-    $nextLocalDate = $nextMoment === null ? null : (new DateTimeImmutable($nextMoment, new DateTimeZone('UTC')))
-        ->setTimezone(new DateTimeZone($timezone))
-        ->format('Y-m-d');
-    $skipped = $pausedUntil !== null && $nextLocalDate !== null && $nextLocalDate < $pausedUntil;
-
-    $statement = $db->prepare(
-        'INSERT INTO tasks (user_id, project_id, category_id, title, notes, status, priority, start_at, end_at, due_at, estimated_minutes, is_focus, recurrence_rule, recurrence_source_task_id, recurrence_series_id, occurrence_state, schedule_mode, window_start, window_end, reminder_minutes, reminder_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    );
-    $statement->execute([
-        (int) $task['user_id'],
-        nullableInt($task['project_id'] ?? null),
-        nullableInt($task['category_id'] ?? null),
-        $task['title'],
-        $task['notes'] ?? '',
-        $skipped ? 'cancelled' : ($nextStart === null ? 'inbox' : 'planned'),
-        $task['priority'],
-        $nextStart,
-        $nextEnd,
-        $nextDue,
-        (int) $task['estimated_minutes'],
-        (int) ($task['is_focus'] ?? 0),
-        $task['recurrence_rule'],
-        (int) $task['id'],
-        $seriesId,
-        $skipped ? 'skipped' : 'normal',
-        $task['schedule_mode'] ?? ($nextStart === null ? 'flexible' : 'fixed'),
-        $task['window_start'] ?? null,
-        $task['window_end'] ?? null,
-        $reminderMinutes,
-        $skipped ? null : reminderAt($nextStart, $reminderMinutes),
-    ]);
-    $nextTaskId = (int) $db->lastInsertId();
-    $copy = $db->prepare('INSERT INTO subtasks (task_id, title, completed, position) SELECT ?, title, 0, position FROM subtasks WHERE task_id = ?');
-    $copy->execute([$nextTaskId, (int) $task['id']]);
-    $track = $db->prepare(
-        'INSERT IGNORE INTO plan_import_items (plan_import_id, entity_type, entity_id)
-         SELECT plan_import_id, "task", ? FROM plan_import_items WHERE entity_type = "task" AND entity_id = ?'
-    );
-    $track->execute([$nextTaskId, (int) $task['id']]);
-    return $nextTaskId;
-}
-
-function shiftedRecurringTimestamp(mixed $value, DateInterval $interval): ?string
-{
-    if ($value === null || $value === '') {
-        return null;
-    }
-    return (new DateTimeImmutable((string) $value, new DateTimeZone('UTC')))->add($interval)->format('Y-m-d H:i:s');
+    return RecurringTasks::createNext($db, $task, $timezone);
 }
 
 function ownedRow(PDO $db, string $table, int $id, int $userId): array

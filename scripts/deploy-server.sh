@@ -27,6 +27,7 @@ fi
 
 php server/scripts/migrate.php
 php server/scripts/create-admin.php
+php server/scripts/repair-recurring-dst.php
 
 mkdir -p server/storage/backups
 if id www >/dev/null 2>&1; then
