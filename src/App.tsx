@@ -55,7 +55,7 @@ import {
   User,
   X,
 } from 'lucide-react'
-import { api } from './api'
+import { api, SESSION_EXPIRED_EVENT } from './api'
 import { initialHabits, initialTasks, projects as initialProjects, weekDays } from './mockData'
 import { buildPlanImportPrompt } from './planImportPrompt'
 import { appTimezone, setAppTimezone, timezoneLabel } from './timezone'
@@ -109,10 +109,9 @@ const rescueReasonLabels: Record<RescueReason, string> = {
 function suggestedRescueStep(task: Task, reason: RescueReason) {
   const firstSubtask = task.subtasks?.find((subtask) => !subtask.completed)?.title.trim()
   if (firstSubtask) return `只做第一小步：${firstSubtask}`
-  if (/sharplingo|学习|课程|阅读|笔记|复习|德语|英语/i.test(task.title)) return '打开学习页面，只完成一个最小练习'
+  if (/学习|课程|阅读|笔记|复习|德语|英语/i.test(task.title)) return '打开学习页面，只完成一个最小练习'
   if (/健身|训练|运动|拉伸|跑步/i.test(task.title)) return '换好衣服，完成第一组热身动作'
   if (/洗漱|护肤|刷牙|洗澡/i.test(task.title)) return '先走到洗手台，完成第一步'
-  if (/火影|三角洲|永劫|游戏|日常/i.test(task.title)) return '打开游戏，只完成第一项日常'
   if (reason === 'low_energy') return `先打开“${task.title}”需要的页面或工具`
   if (reason === 'too_big') return `只完成“${task.title}”的第一个小步骤`
   if (reason === 'unclear') return `写下“${task.title}”接下来唯一的一步`
@@ -1422,6 +1421,7 @@ function HabitEditor({ habit, onClose, onSave }: { habit?: Habit; onClose: () =>
   const [scheduleDays, setScheduleDays] = useState(habit?.scheduleDays?.length ? habit.scheduleDays : [1, 2, 3, 4, 5, 6, 7])
   const [color, setColor] = useState(habit?.color ?? palette[0])
   const [allowMakeup, setAllowMakeup] = useState(habit?.allowMakeup ?? true)
+  const [reminderTime, setReminderTime] = useState(habit?.reminderTime ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -1431,7 +1431,7 @@ function HabitEditor({ habit, onClose, onSave }: { habit?: Habit; onClose: () =>
     setSaving(true)
     setError('')
     try {
-      await onSave({ id: habit?.id, name: name.trim(), description: description.trim(), frequencyType, targetCount, scheduleDays, color, allowMakeup })
+      await onSave({ id: habit?.id, name: name.trim(), description: description.trim(), frequencyType, targetCount, scheduleDays, color, allowMakeup, reminderTime: reminderTime || null })
       onClose()
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : '习惯保存失败')
@@ -1454,6 +1454,7 @@ function HabitEditor({ habit, onClose, onSave }: { habit?: Habit; onClose: () =>
           <label><span>每周目标次数</span><input type="number" min="1" max="7" value={targetCount} onChange={(event) => setTargetCount(Number(event.target.value))} /></label>
           <fieldset className="color-field full"><legend>进行日</legend><div className="day-selector">{weekDays.map((day, index) => <button type="button" className={scheduleDays.includes(index + 1) ? 'active' : ''} onClick={() => toggleDay(index + 1)} key={day}>周{day}</button>)}</div></fieldset>
           <fieldset className="color-field full"><legend>颜色</legend><div className="color-swatches">{palette.map((item) => <button type="button" className={color === item ? 'active' : ''} style={{ backgroundColor: item }} onClick={() => setColor(item)} aria-label={`选择颜色 ${item}`} key={item} />)}</div></fieldset>
+          <label className="full"><span>提醒时间</span><input type="time" value={reminderTime} onChange={(event) => setReminderTime(event.target.value)} /><small className="field-hint">在进行日的这个时间推送提醒；当天已打卡就不提醒。留空表示不提醒。</small></label>
           <div className="habit-makeup-field full"><div><CalendarRange size={17} /><span><strong>允许补签</strong><small>可以修改本周过去日期的记录</small></span></div><Toggle checked={allowMakeup} onChange={() => setAllowMakeup((value) => !value)} /></div>
         </div>
         {scheduleDays.length === 0 && <p className="form-error">至少选择一个进行日。</p>}
@@ -2870,8 +2871,8 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
     setImportError('')
     try {
       const examplePath = import.meta.env.DEV
-        ? '/public/examples/sakura-daily-routine-v3.json'
-        : '/examples/sakura-daily-routine-v3.json'
+        ? '/public/examples/daily-routine-example.json'
+        : '/examples/daily-routine-example.json'
       const response = await fetch(examplePath, { headers: { Accept: 'application/json' } })
       if (!response.ok) throw new Error('无法读取推荐日程。')
       const text = await response.text()
@@ -2928,7 +2929,11 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
       return
     }
     try {
-      const parsed = JSON.parse(await file.text()) as Record<string, unknown>
+      // Weekly e-mailed backups are gzip-compressed (.json.gz).
+      const text = file.name.endsWith('.gz') && 'DecompressionStream' in window
+        ? await new Response(file.stream().pipeThrough(new DecompressionStream('gzip'))).text()
+        : await file.text()
+      const parsed = JSON.parse(text) as Record<string, unknown>
       setBackupData(parsed)
       setBackupPreview(await onPreviewBackup(parsed))
       setRestoreStoredId(null)
@@ -3059,12 +3064,12 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
               {pushError && <p className="form-error">{pushError}</p>}
               <div className="setting-row"><div><strong>任务开始前推送</strong><span>按照每项任务的提前提醒时间发送</span></div><Toggle checked={settings.pushTaskReminders} onChange={() => setSettings({ ...settings, pushTaskReminders: !settings.pushTaskReminders })} /></div>
               <div className="setting-row"><div><strong>每日收尾推送</strong><span>每天 {settings.dailySummaryTime.slice(0, 5)} 提醒回顾今天</span></div><Toggle checked={settings.pushDailySummary} onChange={() => setSettings({ ...settings, pushDailySummary: !settings.pushDailySummary })} /></div>
-              <div className="setting-row"><div><strong>逾期任务推送</strong><span>每天上午集中提醒一次</span></div><Toggle checked={settings.pushOverdueReminder} onChange={() => setSettings({ ...settings, pushOverdueReminder: !settings.pushOverdueReminder })} /></div>
+              <div className="setting-row"><div><strong>逾期任务推送</strong><span>每天日程开始时集中提醒一次</span></div><Toggle checked={settings.pushOverdueReminder} onChange={() => setSettings({ ...settings, pushOverdueReminder: !settings.pushOverdueReminder })} /></div>
               <div className="settings-divider" />
               <div className="settings-title"><div><Mail size={19} /><div><h2>邮件提醒</h2><p>手机测试成功后，可以关闭这里减少邮件打扰</p></div></div></div>
               <div className="setting-row"><div><strong>任务开始前提醒</strong><span>默认提前 {settings.taskReminderMinutes} 分钟</span></div><Toggle checked={settings.emailReminders} onChange={() => setSettings({ ...settings, emailReminders: !settings.emailReminders })} /></div>
               <div className="setting-row"><div><strong>每日收尾邮件</strong><span>每天 {settings.dailySummaryTime.slice(0, 5)} 汇总进度</span></div><Toggle checked={settings.dailySummary} onChange={() => setSettings({ ...settings, dailySummary: !settings.dailySummary })} /></div>
-              <div className="setting-row"><div><strong>逾期任务提醒</strong><span>每天上午发送一次</span></div><Toggle checked={settings.overdueReminder} onChange={() => setSettings({ ...settings, overdueReminder: !settings.overdueReminder })} /></div>
+              <div className="setting-row"><div><strong>逾期任务提醒</strong><span>每天日程开始时发送一次</span></div><Toggle checked={settings.overdueReminder} onChange={() => setSettings({ ...settings, overdueReminder: !settings.overdueReminder })} /></div>
               <button type="button" className="outline-button" onClick={testMail} disabled={testingMail}><Mail size={16} /> {testingMail ? '发送中…' : '发送测试邮件'}</button>
             </section>
           )}
@@ -3074,7 +3079,6 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
               <div className="settings-title"><div><CalendarRange size={19} /><div><h2>日期与时间</h2><p>日程和提醒的默认规则</p></div></div></div>
               <div className="form-grid">
                 <label><span>时区</span><select value={settings.timezone} onChange={(event) => setSettings({ ...settings, timezone: event.target.value })}><option value="Europe/Berlin">Europe/Berlin</option><option value="Asia/Shanghai">Asia/Shanghai</option></select></label>
-                <label><span>一周开始于</span><select value={settings.weekStartsOn} onChange={(event) => setSettings({ ...settings, weekStartsOn: event.target.value as 'monday' | 'sunday' })}><option value="monday">星期一</option><option value="sunday">星期日</option></select></label>
                 <label><span>任务默认提前提醒</span><input type="number" min="0" max="10080" value={settings.taskReminderMinutes} onChange={(event) => setSettings({ ...settings, taskReminderMinutes: Number(event.target.value) })} /></label>
                 <label><span>每日收尾时间</span><input type="time" value={settings.dailySummaryTime.slice(0, 5)} onChange={(event) => setSettings({ ...settings, dailySummaryTime: `${event.target.value}:00` })} /></label>
                 <label><span>AI 整理开始</span><input type="time" value={settings.planningStartTime} onChange={(event) => setSettings({ ...settings, planningStartTime: event.target.value })} /></label>
@@ -3101,7 +3105,7 @@ function SettingsPage({ settings: initialSettings, browserPush, activeSection, d
               </div>
               <div className="settings-divider" />
               <div className="settings-title"><div><TimerReset size={19} /><div><h2>恢复完整备份</h2><p>先检查内容，再完整替换当前看板</p></div></div></div>
-              <label className="outline-button plan-file-button"><Upload size={16} /> 选择备份文件<input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadBackupFile(file); event.currentTarget.value = '' }} /></label>
+              <label className="outline-button plan-file-button"><Upload size={16} /> 选择备份文件<input type="file" accept="application/json,.json,.gz,application/gzip" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadBackupFile(file); event.currentTarget.value = '' }} /></label>
               {(backupPreview || restoreStoredId !== null) && (
                 <div className="backup-restore-panel">
                   {backupPreview && <div><strong>备份版本 {backupPreview.schemaVersion}</strong><span>{taskMoment(backupPreview.exportedAt)} · {backupPreview.counts.tasks} 任务 · {backupPreview.counts.projects} 项目 · {backupPreview.counts.habits} 习惯</span></div>}
@@ -3207,9 +3211,10 @@ export default function App() {
   const [demoMode, setDemoMode] = useState(false)
   const [page, setPage] = useState<PageKey>(() => routeFromLocation().page)
   const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>(() => routeFromLocation().settingsSection)
-  const [tasks, setTasks] = useState(initialTasks)
-  const [habits, setHabits] = useState(initialHabits)
-  const [projectItems, setProjectItems] = useState(initialProjects)
+  // Demo data only exists in local development; production starts empty until the API answers.
+  const [tasks, setTasks] = useState<Task[]>(import.meta.env.DEV ? initialTasks : [])
+  const [habits, setHabits] = useState<Habit[]>(import.meta.env.DEV ? initialHabits : [])
+  const [projectItems, setProjectItems] = useState<Project[]>(import.meta.env.DEV ? initialProjects : [])
   const [categories, setCategories] = useState<Category[]>([
     { id: 1, name: '工作', color: '#496d5b' },
     { id: 2, name: '学习', color: '#b96552' },
@@ -3282,6 +3287,31 @@ export default function App() {
   useEffect(() => {
     if (loggedIn !== true) return
     void refreshBrowserPush()
+  }, [demoMode, loggedIn])
+
+  useEffect(() => {
+    // A request answered 401: the session ended (expired, or the password was changed on another device).
+    const onSessionExpired = () => {
+      setLoggedIn((current) => {
+        if (current) showToast('登录已过期，请重新登录')
+        return false
+      })
+    }
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
+  }, [])
+
+  useEffect(() => {
+    // Phones keep the PWA in memory for days; refresh when it comes back to the foreground.
+    if (loggedIn !== true || demoMode) return
+    let lastRefresh = Date.now()
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || Date.now() - lastRefresh < 30_000) return
+      lastRefresh = Date.now()
+      void api.bootstrap().then(applyBootstrap).catch(() => undefined)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
   }, [demoMode, loggedIn])
 
   useEffect(() => {
@@ -4094,6 +4124,10 @@ export default function App() {
     const currentHabit = habits.find((habit) => habit.id === id)
     if (!currentHabit) return
     const todayIndex = Array.from({ length: 7 }, (_, index) => currentWeekDateIso(index)).indexOf(berlinIsoDate())
+    if (todayIndex >= 0 && day > todayIndex) {
+      showToast('还不能给未来的日期打卡')
+      return
+    }
     if (day < todayIndex && currentHabit.allowMakeup === false) {
       showToast('这个习惯没有开启补签')
       return
@@ -4109,6 +4143,8 @@ export default function App() {
     if (!demoMode) {
       try {
         await api.checkHabit(id, currentWeekDateIso(day), checked)
+        // The streak depends on the habit's rhythm, so take it from the server.
+        void api.bootstrap().then((data) => setHabits(data.habits)).catch(() => undefined)
       } catch (error) {
         setHabits((current) => current.map((habit) => habit.id === id ? currentHabit : habit))
         showToast(error instanceof Error ? error.message : '习惯记录保存失败')
@@ -4505,6 +4541,7 @@ export default function App() {
       targetCount: draft.targetCount,
       scheduleDays: draft.scheduleDays,
       allowMakeup: draft.allowMakeup ?? true,
+      reminderTime: draft.reminderTime ?? null,
     }
     setHabits((current) => existing ? current.map((habit) => habit.id === existing.id ? saved : habit) : [...current, saved])
     showToast(existing ? '习惯已更新' : '习惯已创建')
@@ -4550,7 +4587,7 @@ export default function App() {
     return <main className="loading-shell"><div className="brand-mark large"><span>行</span></div><span>正在打开人生看板…</span></main>
   }
 
-  if (!loggedIn) return <LoginScreen onLogin={login} />
+  if (!loggedIn) return <><LoginScreen onLogin={login} />{toast && <div className="toast"><CheckCircle2 size={17} />{toast}</div>}</>
 
   return (
     <div className="app-shell">

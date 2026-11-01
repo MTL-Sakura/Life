@@ -32,6 +32,7 @@ if (PushNotifier::configured()) {
 
 generateRecurringTasks($db);
 sendTaskReminders($db, $mailer, $push, $nowUtc);
+sendHabitReminders($db, $push, $nowUtc);
 sendDailySummaries($db, $mailer, $push, $nowUtc);
 sendOverdueSummaries($db, $mailer, $push, $nowUtc);
 
@@ -122,6 +123,59 @@ function sendTaskReminders(PDO $db, Mailer $mailer, ?PushNotifier $push, DateTim
     }
 }
 
+/**
+ * Push a reminder at a habit's reminder time on its planned days, unless it has
+ * already been checked off today or the day has been closed.
+ */
+function sendHabitReminders(PDO $db, ?PushNotifier $push, DateTimeImmutable $nowUtc): void
+{
+    if ($push === null) {
+        return;
+    }
+    $habits = $db->query(
+        'SELECT habits.id, habits.user_id, habits.name, habits.frequency_type, habits.schedule_days, habits.reminder_time, users.timezone
+         FROM habits
+         INNER JOIN users ON users.id = habits.user_id
+         INNER JOIN user_settings ON user_settings.user_id = users.id
+         WHERE habits.is_active = 1 AND habits.reminder_time IS NOT NULL AND user_settings.push_task_reminders = 1'
+    )->fetchAll();
+    $logged = $db->prepare('SELECT 1 FROM habit_logs WHERE habit_id = ? AND log_date = ? LIMIT 1');
+    foreach ($habits as $habit) {
+        $localNow = $nowUtc->setTimezone(new DateTimeZone(DateTimes::safeTimezone($habit['timezone'])));
+        if (!withinFiveMinuteWindow($localNow, (string) $habit['reminder_time'])) {
+            continue;
+        }
+        $days = json_decode((string) ($habit['schedule_days'] ?: '[]'), true);
+        $days = is_array($days) && $days !== [] && $habit['frequency_type'] !== 'daily' ? array_map('intval', $days) : [1, 2, 3, 4, 5, 6, 7];
+        if (!in_array((int) $localNow->format('N'), $days, true)) {
+            continue;
+        }
+        $date = $localNow->format('Y-m-d');
+        $reference = $habit['id'] . ':' . $date;
+        if (dayClosed($db, (int) $habit['user_id'], $date) || notificationExists($db, (int) $habit['user_id'], 'habit_reminder', 'push', $reference)) {
+            continue;
+        }
+        $logged->execute([(int) $habit['id'], $date]);
+        if ($logged->fetchColumn() !== false) {
+            continue;
+        }
+        try {
+            $result = $push->sendToUser($db, (int) $habit['user_id'], [
+                'title' => $habit['name'],
+                'body' => '今天还没打卡。做完后在习惯里点一下就好。',
+                'url' => '/habits',
+                'tag' => 'habit-' . (int) $habit['id'] . '-' . $date,
+            ]);
+            if ($result['sent'] > 0) {
+                recordNotification($db, (int) $habit['user_id'], 'habit_reminder', 'push', $reference, $nowUtc);
+                echo "Habit push sent: {$habit['id']}\n";
+            }
+        } catch (Throwable $error) {
+            error_log("Habit push {$habit['id']} failed: {$error}");
+        }
+    }
+}
+
 function sendDailySummaries(PDO $db, Mailer $mailer, ?PushNotifier $push, DateTimeImmutable $nowUtc): void
 {
     $users = $db->query(
@@ -143,9 +197,12 @@ function sendDailySummaries(PDO $db, Mailer $mailer, ?PushNotifier $push, DateTi
 
         [$startUtc, $endUtc] = localDayBounds($localNow);
         $summary = $db->prepare(
+            // Skipped or cancelled occurrences are not part of the day, and the time
+            // spent is the recorded time, not the estimate.
             'SELECT COUNT(*) AS total, SUM(status = "completed") AS completed,
-                    COALESCE(SUM(CASE WHEN status = "completed" THEN estimated_minutes ELSE 0 END), 0) AS minutes
-             FROM tasks WHERE user_id = ? AND (start_at >= ? AND start_at < ? OR completed_at >= ? AND completed_at < ?)'
+                    COALESCE(SUM(CASE WHEN status = "completed" THEN COALESCE(actual_minutes, estimated_minutes) ELSE 0 END), 0) AS minutes
+             FROM tasks WHERE user_id = ? AND status != "cancelled"
+               AND (start_at >= ? AND start_at < ? OR completed_at >= ? AND completed_at < ?)'
         );
         $summary->execute([(int) $user['id'], $startUtc, $endUtc, $startUtc, $endUtc]);
         $row = $summary->fetch() ?: [];
@@ -194,14 +251,16 @@ function sendDailySummaries(PDO $db, Mailer $mailer, ?PushNotifier $push, DateTi
 function sendOverdueSummaries(PDO $db, Mailer $mailer, ?PushNotifier $push, DateTimeImmutable $nowUtc): void
 {
     $users = $db->query(
-        'SELECT users.id, users.email, users.timezone, user_settings.overdue_reminder, user_settings.push_overdue_reminder
+        'SELECT users.id, users.email, users.timezone, user_settings.overdue_reminder, user_settings.push_overdue_reminder,
+                user_settings.planning_start_time
          FROM users INNER JOIN user_settings ON user_settings.user_id = users.id
          WHERE user_settings.overdue_reminder = 1 OR user_settings.push_overdue_reminder = 1'
     )->fetchAll();
 
     foreach ($users as $user) {
         $localNow = $nowUtc->setTimezone(new DateTimeZone(DateTimes::safeTimezone($user['timezone'])));
-        if (!withinFiveMinuteWindow($localNow, '09:00:00')) {
+        // Sent when the planning day starts (Settings → planning hours), not at a fixed 09:00.
+        if (!withinFiveMinuteWindow($localNow, (string) ($user['planning_start_time'] ?: '09:00:00'))) {
             continue;
         }
         $reference = $localNow->format('Y-m-d');

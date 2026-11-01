@@ -2,6 +2,9 @@ import type { AiPlan, BackupPreview, BootstrapData, EveningDecision, Habit, Morn
 
 let csrfToken: string | null = null
 
+/** Fired when the server no longer recognises the session, so the app can show the login screen. */
+export const SESSION_EXPIRED_EVENT = 'life:session-expired'
+
 type RequestOptions = {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
   body?: unknown
@@ -27,6 +30,10 @@ async function request<T>(action: string, options: RequestOptions = {}): Promise
 
   const data = await response.json() as T & { error?: string; csrfToken?: string }
   if (data.csrfToken) csrfToken = data.csrfToken
+  if (response.status === 401 && action !== 'login') {
+    csrfToken = null
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+  }
   if (!response.ok) throw new Error(data.error ?? '请求失败，请稍后重试。')
   return data
 }

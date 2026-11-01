@@ -102,6 +102,7 @@ export type Habit = {
   targetCount?: number
   scheduleDays?: number[]
   allowMakeup?: boolean
+  reminderTime?: string | null
 }
 
 export type Project = {

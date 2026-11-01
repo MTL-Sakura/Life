@@ -154,7 +154,9 @@ final class BackupManager
 
         $db->beginTransaction();
         try {
-            foreach (['notification_logs', 'focus_sessions', 'task_schedule_blocks', 'subtasks', 'ai_plans', 'daily_task_decisions', 'daily_checkins'] as $table) {
+            // Notification logs are kept: deleting them would make today's
+            // summaries and reminders go out a second time after a restore.
+            foreach (['focus_sessions', 'task_schedule_blocks', 'subtasks', 'ai_plans', 'daily_task_decisions', 'daily_checkins'] as $table) {
                 $this->deleteOwned($db, $table, $userId);
             }
             $db->prepare('DELETE FROM plan_imports WHERE user_id = ?')->execute([$userId]);
@@ -176,7 +178,7 @@ final class BackupManager
             $this->insertRows($db, 'focus_sessions', (array) ($data['focusSessions'] ?? []), ['id', 'user_id', 'task_id', 'session_type', 'status', 'planned_seconds', 'rescue_reason', 'rescue_step', 'rescue_outcome', 'elapsed_seconds', 'started_at', 'last_resumed_at', 'ended_at', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'habits', (array) ($data['habits'] ?? []), ['id', 'user_id', 'name', 'description', 'color', 'frequency_type', 'target_count', 'schedule_days', 'start_date', 'reminder_time', 'allow_makeup', 'is_active', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'habit_logs', (array) ($data['habitLogs'] ?? []), ['id', 'habit_id', 'log_date', 'status', 'note', 'completed_at', 'created_at']);
-            $this->insertRows($db, 'notification_logs', (array) ($data['notifications'] ?? []), ['id', 'user_id', 'type', 'channel', 'reference_key', 'sent_at', 'created_at'], $userId);
+            $this->insertRows($db, 'notification_logs', (array) ($data['notifications'] ?? []), ['user_id', 'type', 'channel', 'reference_key', 'sent_at', 'created_at'], $userId, true);
             $this->insertRows($db, 'ai_plans', (array) ($data['aiPlans'] ?? []), ['id', 'user_id', 'status', 'model', 'source_task_ids', 'target_start_date', 'target_end_date', 'proposal_json', 'error_message', 'input_tokens', 'output_tokens', 'expires_at', 'applied_at', 'created_at', 'updated_at'], $userId);
             $this->insertRows($db, 'plan_imports', (array) ($data['planImports'] ?? []), ['id', 'user_id', 'import_key', 'document_name', 'imported_counts', 'created_at'], $userId);
             $this->insertRows($db, 'plan_import_items', (array) ($data['planImportItems'] ?? []), ['id', 'plan_import_id', 'entity_type', 'entity_id', 'created_at']);
@@ -221,7 +223,7 @@ final class BackupManager
         $statement->execute([$settings['user_id'], ...array_map(static fn (string $column): mixed => $values[$column], $columns)]);
     }
 
-    private function insertRows(PDO $db, string $table, array $rows, array $allowedColumns, ?int $userId = null): void
+    private function insertRows(PDO $db, string $table, array $rows, array $allowedColumns, ?int $userId = null, bool $ignoreDuplicates = false): void
     {
         foreach ($rows as $row) {
             if (!is_array($row)) {
@@ -234,7 +236,7 @@ final class BackupManager
             if ($columns === []) {
                 continue;
             }
-            $sql = "INSERT INTO {$table} (" . implode(', ', $columns) . ') VALUES (' . implode(', ', array_fill(0, count($columns), '?')) . ')';
+            $sql = ($ignoreDuplicates ? 'INSERT IGNORE' : 'INSERT') . " INTO {$table} (" . implode(', ', $columns) . ') VALUES (' . implode(', ', array_fill(0, count($columns), '?')) . ')';
             $statement = $db->prepare($sql);
             $statement->execute(array_map(static fn (string $column): mixed => $row[$column], $columns));
         }
