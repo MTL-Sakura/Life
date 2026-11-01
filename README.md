@@ -2,7 +2,7 @@
 
 一个面向单用户的人生计划与执行看板。第一版已经包含可部署的响应式前端、PHP API、MySQL 数据结构和单用户登录；本地开发时如果 PHP API 不可用，界面会自动使用演示数据。
 
-当前版本：**v1.19.1** · [项目全景](PROJECT_OVERVIEW.md) · [完整版本记录](CHANGELOG.md) · [发布流程](docs/RELEASE_PROCESS.md) · [GitHub Releases](https://github.com/MTL-Sakura/Life/releases)
+当前版本：**v1.20.0** · [项目全景](PROJECT_OVERVIEW.md) · [完整版本记录](CHANGELOG.md) · [发布流程](docs/RELEASE_PROCESS.md) · [GitHub Releases](https://github.com/MTL-Sakura/Life/releases)
 
 ## 第一版功能
 
@@ -88,7 +88,7 @@ AI 每次只整理今天的未完成任务，并可纳入临近截止日期的�
 
 浏览器推送使用标准 Web Push。部署脚本会在首次更新时自动生成 VAPID 密钥并安全写入 `.env`。iPhone 需要先在 Safari 中将网站添加到主屏幕，并保持“作为网页 App 打开”；随后从桌面图标进入“设置 → 提醒”，点击“开启通知”和“发送测试通知”。测试成功后可以独立关闭任务邮件、每日收尾邮件和逾期邮件。
 
-口述计划可以按照 [Life Plan JSON 格式](docs/PLAN_IMPORT.md)整理，然后在“设置 → 数据 → 计划导入”中粘贴或选择文件。示例见 [`public/examples/sakura-daily-routine-v3.json`](public/examples/sakura-daily-routine-v3.json)。导入只追加数据，不会清空现有看板；同一个 `importKey` 不能重复导入，导入后可在数据设置中整批撤销。
+口述计划可以按照 [Life Plan JSON 格式](docs/PLAN_IMPORT.md)整理，然后在“设置 → 数据 → 计划导入”中粘贴或选择文件。示例见 [`public/examples/daily-routine-example.json`](public/examples/daily-routine-example.json)。导入只追加数据，不会清空现有看板；同一个 `importKey` 不能重复导入，导入后可在数据设置中整批撤销。
 
 浏览器推送、邮件提醒和循环任务的自动生成共用一个宝塔“计划任务”。为了让手机提醒误差不超过约 1 分钟，将执行周期设为“每 1 分钟”：
 
@@ -105,3 +105,7 @@ su -s /bin/bash -c '/www/server/php/83/bin/php /www/wwwroot/life.snowmoon1824.to
 ```
 
 脚本每天保留最近 7 份每日备份，并在星期日额外生成一份每周备份，保留最近 4 份。备份位于 `server/storage/backups`，不在网站公开目录中；也可以在“设置 → 数据”中创建、下载或恢复备份。
+
+每周备份还会压缩后发到账户邮箱，作为服务器之外的副本，恢复时直接选择邮件附件里的 `.json.gz` 文件即可。不需要时在 `.env` 中设置 `BACKUP_EMAIL=false`。
+
+登录会话保存在 `server/storage/sessions`，有效期 30 天；同一账户 15 分钟内输错密码 5 次后会暂停登录。修改密码会让其他设备上的登录失效。

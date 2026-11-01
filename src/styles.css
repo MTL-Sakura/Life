@@ -4555,6 +4555,12 @@ p {
   font-weight: 650;
 }
 
+.editor-form .field-hint {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
 .editor-form input,
 .editor-form select,
 .editor-form textarea {

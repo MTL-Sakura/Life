@@ -6,15 +6,9 @@ APP_ROOT="/www/wwwroot/life.snowmoon1824.top"
 
 cd "$APP_ROOT"
 
-if ! composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction; then
-  echo "==> Composer lockfile is stale; refreshing PHP dependencies"
-  composer update --no-dev --prefer-dist --optimize-autoloader --no-interaction
-fi
-
-if ! php -r 'require "vendor/autoload.php"; exit(class_exists("Minishlink\\WebPush\\VAPID") ? 0 : 1);'; then
-  echo "==> Web Push dependency is missing; refreshing PHP dependencies"
-  composer update --no-dev --prefer-dist --optimize-autoloader --no-interaction
-fi
+# Install exactly the versions recorded in composer.lock. If this fails, fix
+# the lock file in the repository instead of upgrading packages on the server.
+composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 
 php server/scripts/ensure-vapid-keys.php
 
@@ -25,14 +19,14 @@ else
   chmod 600 .env
 fi
 
-php server/scripts/migrate.php
-php server/scripts/create-admin.php
-php server/scripts/repair-recurring-dst.php
-
-mkdir -p server/storage/backups
+mkdir -p server/storage/backups server/storage/sessions
 if id www >/dev/null 2>&1; then
   chown -R www:www server/storage
 fi
-chmod 700 server/storage server/storage/backups
+chmod 700 server/storage server/storage/backups server/storage/sessions
+
+php server/scripts/migrate.php
+php server/scripts/create-admin.php
+php server/scripts/repair-recurring-dst.php
 
 echo "Life Dashboard deployment is ready."

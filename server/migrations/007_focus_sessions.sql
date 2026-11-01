@@ -19,9 +19,5 @@ CREATE TABLE focus_sessions (
     CONSTRAINT focus_sessions_task_fk FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-UPDATE tasks AS task
-INNER JOIN plan_import_items AS item ON item.entity_type = 'task' AND item.entity_id = task.id
-INNER JOIN plan_imports AS imported ON imported.id = item.plan_import_id
-SET task.is_focus = 1
-WHERE imported.import_key = 'sakura-daily-routine-v3'
-  AND task.title IN ('SharpLingo 第一学习块', 'SharpLingo 第二学习块');
+-- A one-off update that marked two imported study tasks as focus tasks used to
+-- follow here. It has already run on the production database.
