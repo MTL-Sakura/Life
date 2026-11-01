@@ -37,3 +37,7 @@ pnpm-debug.log*
 # prisma
 prisma/*.db
 prisma/*.db-journal
+
+# php
+/vendor
+/server/storage

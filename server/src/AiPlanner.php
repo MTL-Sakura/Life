@@ -825,7 +825,8 @@ final class AiPlanner
     {
         $start = $today->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $end = $today->modify('+1 day')->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
-        $statement = $db->prepare('SELECT COUNT(*) FROM ai_plans WHERE user_id = ? AND created_at >= ? AND created_at < ?');
+        // Failed requests (timeouts, OpenAI errors) do not use up the daily allowance.
+        $statement = $db->prepare('SELECT COUNT(*) FROM ai_plans WHERE user_id = ? AND status != "failed" AND created_at >= ? AND created_at < ?');
         $statement->execute([$userId, $start, $end]);
         return (int) $statement->fetchColumn();
     }

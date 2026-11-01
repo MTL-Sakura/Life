@@ -9,7 +9,8 @@ use RuntimeException;
 
 final class Mailer
 {
-    public function send(string $to, string $subject, string $html, string $text): void
+    /** @param array<string, string> $attachments file name => file contents */
+    public function send(string $to, string $subject, string $html, string $text, array $attachments = []): void
     {
         $mail = new PHPMailer(true);
         $mail->CharSet = PHPMailer::CHARSET_UTF8;
@@ -39,6 +40,9 @@ final class Mailer
         $mail->Subject = $subject;
         $mail->Body = $this->layout($html);
         $mail->AltBody = $text;
+        foreach ($attachments as $fileName => $contents) {
+            $mail->addStringAttachment($contents, $fileName);
+        }
         $mail->send();
     }
 

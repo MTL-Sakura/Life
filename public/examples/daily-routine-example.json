@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "importKey": "daily-routine-example-v1",
+  "name": "示例：规律作息、运动与学习",
+  "startDate": "today",
+  "timezone": "Europe/Berlin",
+  "categories": [
+    { "name": "学习", "color": "#58748f" },
+    { "name": "健康", "color": "#496d5b" },
+    { "name": "生活", "color": "#a1843e" }
+  ],
+  "projects": [
+    {
+      "key": "learning",
+      "title": "持续学习",
+      "description": "每天安排两段专注学习，稳步推进课程。",
+      "area": "学习成长",
+      "color": "#58748f",
+      "currentStage": "建立每日节奏",
+      "stages": ["建立每日节奏", "稳定完成每日课程", "复习与巩固"]
+    }
+  ],
+  "habits": [
+    {
+      "name": "按时起床",
+      "description": "目标 8 点前起床。",
+      "color": "#a1843e",
+      "frequency": "daily",
+      "targetCount": 1,
+      "scheduleDays": [1, 2, 3, 4, 5, 6, 7],
+      "reminderTime": "08:00",
+      "allowMakeup": false
+    },
+    {
+      "name": "运动",
+      "description": "每周至少 3 次，每次 30 分钟以上。",
+      "color": "#496d5b",
+      "frequency": "weekly",
+      "targetCount": 3,
+      "scheduleDays": [1, 2, 3, 4, 5, 6, 7],
+      "allowMakeup": true
+    }
+  ],
+  "tasks": [
+    {
+      "title": "晨间启动",
+      "notes": "起床、洗漱、吃早餐。",
+      "category": "生活",
+      "priority": "high",
+      "duration": 30,
+      "startTime": "08:00",
+      "recurrence": "daily",
+      "reminderMinutes": 10,
+      "subtasks": ["起床并离开床铺", "吃早餐"]
+    },
+    {
+      "title": "第一段学习",
+      "notes": "开始前只需要打开课程页面。",
+      "category": "学习",
+      "projectKey": "learning",
+      "priority": "high",
+      "duration": 90,
+      "startTime": "09:30",
+      "recurrence": "daily",
+      "focus": true,
+      "reminderMinutes": 10,
+      "subtasks": []
+    },
+    {
+      "title": "午餐与休息",
+      "notes": "离开屏幕休息一会儿。",
+      "category": "生活",
+      "priority": "medium",
+      "duration": 60,
+      "startTime": "12:30",
+      "recurrence": "daily",
+      "reminderMinutes": 10,
+      "subtasks": []
+    },
+    {
+      "title": "第二段学习",
+      "notes": "复习上午内容，完成练习。",
+      "category": "学习",
+      "projectKey": "learning",
+      "priority": "medium",
+      "duration": 90,
+      "startTime": "14:30",
+      "recurrence": "daily",
+      "focus": true,
+      "reminderMinutes": 10,
+      "subtasks": []
+    },
+    {
+      "title": "运动",
+      "notes": "包含热身和拉伸。",
+      "category": "健康",
+      "priority": "medium",
+      "duration": 60,
+      "startTime": "17:00",
+      "recurrence": "daily",
+      "reminderMinutes": 15,
+      "subtasks": []
+    },
+    {
+      "title": "睡前收尾",
+      "notes": "结束当天安排，准备睡觉。",
+      "category": "生活",
+      "priority": "medium",
+      "duration": 20,
+      "startTime": "22:30",
+      "recurrence": "daily",
+      "reminderMinutes": 5,
+      "subtasks": ["洗漱", "放下手机"]
+    }
+  ]
+}
