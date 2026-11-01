@@ -18,10 +18,12 @@ if (strlen($password) < 10) {
     throw new RuntimeException('ADMIN_PASSWORD must contain at least 10 characters.');
 }
 
+// Only creates the account on first deploy. Later deploys must not overwrite
+// the e-mail, name or timezone the user changed in the settings page.
 $statement = $db->prepare(
     'INSERT INTO users (username, password_hash, email, display_name, timezone)
      VALUES (:username, :password_hash, :email, :display_name, :timezone)
-     ON DUPLICATE KEY UPDATE email = VALUES(email), display_name = VALUES(display_name), timezone = VALUES(timezone)'
+     ON DUPLICATE KEY UPDATE id = id'
 );
 $statement->execute([
     'username' => $username,

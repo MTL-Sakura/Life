@@ -9,6 +9,7 @@ use Life\BackupManager;
 use Life\Config;
 use Life\Database;
 use Life\DateTimes;
+use Life\Habits;
 use Life\Http;
 use Life\Mailer;
 use Life\PlanImporter;
@@ -32,7 +33,13 @@ if ($action === 'login') {
     $input = Http::input();
     $username = trim((string) ($input['username'] ?? ''));
     $password = (string) ($input['password'] ?? '');
+    $retryAfter = Auth::throttleSeconds($db, $username, Auth::clientIp());
+    if ($retryAfter > 0) {
+        header('Retry-After: ' . $retryAfter);
+        Http::json(['error' => '登录失败次数过多，请 ' . (int) ceil($retryAfter / 60) . ' 分钟后再试。'], 429);
+    }
     $user = Auth::login($db, $username, $password);
+    Auth::recordAttempt($db, $username, Auth::clientIp(), $user !== null);
     if ($user === null) {
         Http::json(['error' => '用户名或密码不正确。'], 422);
     }
@@ -146,6 +153,7 @@ switch ($action) {
         if ($title === '') {
             Http::json(['error' => '任务标题不能为空。'], 422);
         }
+        assertMaxLength($title, 255, '任务标题');
 
         $startAt = DateTimes::toUtc(nullableString($input['startAt'] ?? null), $timezone);
         $endAt = DateTimes::toUtc(nullableString($input['endAt'] ?? null), $timezone);
@@ -161,8 +169,8 @@ switch ($action) {
         );
         $statement->execute([
             'user_id' => $userId,
-            'project_id' => nullableInt($input['projectId'] ?? null),
-            'category_id' => nullableInt($input['categoryId'] ?? null),
+            'project_id' => ownedReference($db, 'projects', nullableInt($input['projectId'] ?? null), $userId),
+            'category_id' => ownedReference($db, 'categories', nullableInt($input['categoryId'] ?? null), $userId),
             'title' => $title,
             'notes' => trim((string) ($input['notes'] ?? '')),
             'status' => $status,
@@ -237,6 +245,15 @@ switch ($action) {
         }
         if (array_key_exists('title', $updates) && $updates['title'] === '') {
             Http::json(['error' => '任务标题不能为空。'], 422);
+        }
+        if (array_key_exists('title', $updates)) {
+            assertMaxLength($updates['title'], 255, '任务标题');
+        }
+        if (array_key_exists('project_id', $updates)) {
+            $updates['project_id'] = ownedReference($db, 'projects', $updates['project_id'], $userId);
+        }
+        if (array_key_exists('category_id', $updates)) {
+            $updates['category_id'] = ownedReference($db, 'categories', $updates['category_id'], $userId);
         }
 
         if (array_key_exists('priority', $input)) {
@@ -623,6 +640,8 @@ switch ($action) {
         if ($name === '') {
             Http::json(['error' => '习惯名称不能为空。'], 422);
         }
+        assertMaxLength($name, 190, '习惯名称');
+        assertMaxLength(trim((string) ($input['description'] ?? '')), 255, '目标说明');
         $localToday = new DateTimeImmutable('today', new DateTimeZone($timezone));
         $statement = $db->prepare(
             'INSERT INTO habits (user_id, name, description, color, frequency_type, target_count, schedule_days, start_date, reminder_time, allow_makeup)
@@ -651,6 +670,8 @@ switch ($action) {
         if ($name === '') {
             Http::json(['error' => '习惯名称不能为空。'], 422);
         }
+        assertMaxLength($name, 190, '习惯名称');
+        assertMaxLength(trim((string) ($input['description'] ?? $current['description'] ?? '')), 255, '目标说明');
         $reminderTime = array_key_exists('reminderTime', $input)
             ? validTime(nullableString($input['reminderTime']))
             : nullableString($current['reminder_time'] ?? null);
@@ -712,6 +733,9 @@ switch ($action) {
             Http::json(['error' => '打卡日期格式不正确。'], 422);
         }
         $localToday = new DateTimeImmutable('today', new DateTimeZone($timezone));
+        if ($date > $localToday->format('Y-m-d')) {
+            Http::json(['error' => '还不能给未来的日期打卡。'], 422);
+        }
         if ($date < $localToday->format('Y-m-d') && !(bool) $habit['allow_makeup']) {
             Http::json(['error' => '这个习惯没有开启补签。'], 422);
         }
@@ -733,6 +757,7 @@ switch ($action) {
         if ($title === '') {
             Http::json(['error' => '项目名称不能为空。'], 422);
         }
+        assertMaxLength($title, 190, '项目名称');
         $statement = $db->prepare('INSERT INTO projects (user_id, title, description, area, color, due_at, current_stage) VALUES (?, ?, ?, ?, ?, ?, ?)');
         $statement->execute([
             $userId,
@@ -762,6 +787,7 @@ switch ($action) {
         if ($title === '') {
             Http::json(['error' => '项目名称不能为空。'], 422);
         }
+        assertMaxLength($title, 190, '项目名称');
 
         $stages = [];
         foreach ((array) ($input['stages'] ?? []) as $stage) {
@@ -866,8 +892,9 @@ switch ($action) {
             password_hash($newPassword, PASSWORD_DEFAULT),
             $userId,
         ]);
-        session_regenerate_id(true);
-        Http::json(['ok' => true]);
+        // Sign out every other device that still uses the old password.
+        Auth::rotateSessionVersion($db, $userId);
+        Http::json(['ok' => true, 'csrfToken' => Auth::csrfToken()]);
 
     case 'data.export':
         Http::requireMethod('GET');
@@ -989,7 +1016,14 @@ switch ($action) {
 
     case 'settings.update':
         Http::requireMethod('PATCH', 'POST');
-        $input = Http::input();
+        // Fields missing from the request keep their saved value instead of
+        // falling back to defaults (which used to switch reminders back on).
+        $currentSettings = $db->prepare(
+            'SELECT users.display_name, users.email, users.timezone, user_settings.*
+             FROM users LEFT JOIN user_settings ON user_settings.user_id = users.id WHERE users.id = ?'
+        );
+        $currentSettings->execute([$userId]);
+        $input = [...settingsView($currentSettings->fetch() ?: []), ...Http::input()];
         $planningStart = validTime((string) ($input['planningStartTime'] ?? '09:00'));
         $planningEnd = validTime((string) ($input['planningEndTime'] ?? '23:30'));
         $lunchStart = validTime((string) ($input['lunchStartTime'] ?? '12:30'));
@@ -1130,9 +1164,13 @@ function bootstrapData(PDO $db, int $userId, string $timezone): array
          LEFT JOIN projects ON projects.id = tasks.project_id
          LEFT JOIN categories ON categories.id = tasks.category_id
          WHERE tasks.user_id = ? AND (tasks.status != "cancelled" OR tasks.occurrence_state = "skipped")
+           AND (tasks.status NOT IN ("completed", "cancelled")
+                OR COALESCE(tasks.completed_at, tasks.start_at, tasks.due_at, tasks.updated_at) >= ?)
          ORDER BY tasks.status = "completed", tasks.start_at IS NULL, tasks.start_at, tasks.created_at DESC'
     );
-    $tasksStatement->execute([$userId]);
+    // Finished tasks older than this are left out of the page data: a daily
+    // routine adds hundreds of rows a year. Statistics are computed in SQL.
+    $tasksStatement->execute([$userId, gmdate('Y-m-d H:i:s', time() - 120 * 86400)]);
     $taskRows = $tasksStatement->fetchAll();
     $taskIds = array_map(static fn (array $row): int => (int) $row['id'], $taskRows);
     $subtasks = subtaskMap($db, $taskIds);
@@ -1160,33 +1198,46 @@ function bootstrapData(PDO $db, int $userId, string $timezone): array
          GROUP BY projects.id ORDER BY projects.updated_at DESC'
     );
     $projectStatement->execute([$userId]);
-    $projects = [];
-    $stageStatement = $db->prepare('SELECT title FROM project_stages WHERE project_id = ? ORDER BY position, id');
-    foreach ($projectStatement->fetchAll() as $project) {
-        $stageStatement->execute([(int) $project['id']]);
-        $projects[] = Views::project($project, $stageStatement->fetchAll(PDO::FETCH_COLUMN));
+    $projectRows = $projectStatement->fetchAll();
+    $stagesByProject = [];
+    if ($projectRows !== []) {
+        $projectIds = array_map(static fn (array $project): int => (int) $project['id'], $projectRows);
+        $stageStatement = $db->prepare('SELECT project_id, title FROM project_stages WHERE project_id IN (' . implode(', ', array_fill(0, count($projectIds), '?')) . ') ORDER BY position, id');
+        $stageStatement->execute($projectIds);
+        foreach ($stageStatement->fetchAll() as $stage) {
+            $stagesByProject[(int) $stage['project_id']][] = $stage['title'];
+        }
     }
+    $projects = array_map(static fn (array $project): array => Views::project($project, $stagesByProject[(int) $project['id']] ?? []), $projectRows);
 
     [$weekStartUtc, $weekEndUtc, $localWeekStart] = DateTimes::berlinWeekBounds($timezone);
     $weekStartDate = $localWeekStart->format('Y-m-d');
-    $weekEndDate = $localWeekStart->modify('+7 days')->format('Y-m-d');
     $habitStatement = $db->prepare('SELECT * FROM habits WHERE user_id = ? AND is_active = 1 ORDER BY created_at');
     $habitStatement->execute([$userId]);
-    $logStatement = $db->prepare('SELECT log_date, status FROM habit_logs WHERE habit_id = ? AND log_date >= ? AND log_date < ?');
-    $streakStatement = $db->prepare("SELECT log_date FROM habit_logs WHERE habit_id = ? AND status = 'completed' ORDER BY log_date DESC LIMIT 180");
-    $habits = [];
-    foreach ($habitStatement->fetchAll() as $habit) {
-        $logStatement->execute([(int) $habit['id'], $weekStartDate, $weekEndDate]);
-        $logs = [];
+    $habitRows = $habitStatement->fetchAll();
+    // One query for every habit's recent logs instead of two queries per habit.
+    $logsByHabit = [];
+    if ($habitRows !== []) {
+        $habitIds = array_map(static fn (array $habit): int => (int) $habit['id'], $habitRows);
+        $placeholders = implode(', ', array_fill(0, count($habitIds), '?'));
+        $since = $localWeekStart->modify('-800 days')->format('Y-m-d');
+        $logStatement = $db->prepare("SELECT habit_id, log_date, status FROM habit_logs WHERE habit_id IN ({$placeholders}) AND log_date >= ?");
+        $logStatement->execute([...$habitIds, $since]);
         foreach ($logStatement->fetchAll() as $log) {
-            $logs[$log['log_date']] = $log['status'];
+            $logsByHabit[(int) $log['habit_id']][(string) $log['log_date']] = (string) $log['status'];
         }
+    }
+    $localToday = new DateTimeImmutable('today', new DateTimeZone($timezone));
+    $habits = [];
+    foreach ($habitRows as $habit) {
+        $logs = $logsByHabit[(int) $habit['id']] ?? [];
         $checked = [];
         for ($index = 0; $index < 7; $index++) {
             $date = $localWeekStart->modify("+{$index} days")->format('Y-m-d');
             $checked[] = ($logs[$date] ?? null) === 'completed';
         }
-        $streakStatement->execute([(int) $habit['id']]);
+        $scheduleDays = json_decode($habit['schedule_days'] ?: '[]', true);
+        $scheduleDays = is_array($scheduleDays) ? $scheduleDays : [];
         $habits[] = [
             'id' => (int) $habit['id'],
             'name' => $habit['name'],
@@ -1195,9 +1246,10 @@ function bootstrapData(PDO $db, int $userId, string $timezone): array
             'color' => $habit['color'],
             'frequencyType' => $habit['frequency_type'],
             'targetCount' => (int) $habit['target_count'],
-            'scheduleDays' => json_decode($habit['schedule_days'] ?: '[]', true),
+            'scheduleDays' => $scheduleDays,
             'allowMakeup' => (bool) $habit['allow_makeup'],
-            'streak' => calculateStreak($streakStatement->fetchAll(PDO::FETCH_COLUMN), $timezone),
+            'reminderTime' => $habit['reminder_time'] === null ? null : substr((string) $habit['reminder_time'], 0, 5),
+            'streak' => Habits::streak($logs, (string) $habit['frequency_type'], (int) $habit['target_count'], $scheduleDays, $habit['start_date'] ?? null, $localToday),
             'checked' => $checked,
         ];
     }
@@ -1279,17 +1331,27 @@ function applyEveningDecision(PDO $db, array $task, string $choice, string $time
 {
     endFocusSessionForEvening($db, (int) $task['id'], $now);
 
-    if ($choice === 'drop') {
-        if (nullableString($task['recurrence_rule'] ?? null) !== null) {
-            createNextRecurringTask($db, $task, $timezone);
-        }
+    $recurring = nullableString($task['recurrence_rule'] ?? null) !== null;
+    $nextOccurrenceId = $recurring ? createNextRecurringTask($db, $task, $timezone) : null;
+    // When the series already has an occurrence tomorrow (a daily task), moving
+    // this one to tomorrow too would leave two copies; skip this one instead.
+    $nextIsTomorrow = false;
+    if ($choice === 'tomorrow' && $nextOccurrenceId !== null) {
+        $nextStatement = $db->prepare('SELECT COALESCE(start_at, due_at, end_at) FROM tasks WHERE id = ?');
+        $nextStatement->execute([$nextOccurrenceId]);
+        $nextMoment = $nextStatement->fetchColumn();
+        $zone = new DateTimeZone($timezone);
+        $nextIsTomorrow = is_string($nextMoment)
+            && (new DateTimeImmutable($nextMoment, new DateTimeZone('UTC')))->setTimezone($zone)->format('Y-m-d')
+                === (new DateTimeImmutable('tomorrow', $zone))->format('Y-m-d');
+    }
+    if ($choice === 'drop' || $nextIsTomorrow) {
         $db->prepare("UPDATE tasks SET status = 'cancelled', occurrence_state = 'skipped', reminder_at = NULL, reminder_sent_at = NULL, push_reminder_sent_at = NULL WHERE id = ? AND user_id = ?")
             ->execute([(int) $task['id'], (int) $task['user_id']]);
         return;
     }
 
-    if (nullableString($task['recurrence_rule'] ?? null) !== null) {
-        createNextRecurringTask($db, $task, $timezone);
+    if ($recurring) {
         $db->prepare('UPDATE tasks SET recurrence_rule = NULL, recurrence_series_id = NULL WHERE id = ? AND user_id = ?')
             ->execute([(int) $task['id'], (int) $task['user_id']]);
     }
@@ -1559,6 +1621,7 @@ function updateFocusSession(PDO $db, array $task, int $userId, string $action, i
                     $now,
                     $now,
                 ]);
+                markTaskInProgress($db, (int) $task['id'], $userId, true);
             }
             $db->commit();
             return null;
@@ -1574,7 +1637,10 @@ function updateFocusSession(PDO $db, array $task, int $userId, string $action, i
                 $db->commit();
                 return ['message' => '专注计时已经暂停。', 'status' => 409];
             }
-            $elapsed = max(0, runningFocusElapsed($session) - $idleSeconds);
+            // Idle time can only come out of the segment that is running now,
+            // never out of time recorded before the last pause.
+            $segmentSeconds = runningFocusElapsed($session) - (int) $session['elapsed_seconds'];
+            $elapsed = (int) $session['elapsed_seconds'] + max(0, $segmentSeconds - $idleSeconds);
             $db->prepare("UPDATE focus_sessions SET status = 'paused', elapsed_seconds = ?, last_resumed_at = NULL WHERE id = ?")
                 ->execute([$elapsed, (int) $session['id']]);
         } elseif ($action === 'resume') {
@@ -1590,10 +1656,12 @@ function updateFocusSession(PDO $db, array $task, int $userId, string $action, i
             }
             $db->prepare("UPDATE focus_sessions SET status = 'running', last_resumed_at = ? WHERE id = ?")
                 ->execute([$now, (int) $session['id']]);
+            markTaskInProgress($db, (int) $task['id'], $userId, true);
         } elseif ($action === 'end') {
             $elapsed = $session['status'] === 'running' ? runningFocusElapsed($session) : (int) $session['elapsed_seconds'];
             $db->prepare("UPDATE focus_sessions SET status = 'completed', elapsed_seconds = ?, last_resumed_at = NULL, ended_at = ? WHERE id = ?")
                 ->execute([$elapsed, $now, (int) $session['id']]);
+            markTaskInProgress($db, (int) $task['id'], $userId, false);
         } else {
             $db->commit();
             return ['message' => '无法识别专注计时操作。', 'status' => 422];
@@ -1606,6 +1674,21 @@ function updateFocusSession(PDO $db, array $task, int $userId, string $action, i
         }
         throw $error;
     }
+}
+
+/**
+ * Keeps the task status in step with its timer: "in_progress" while a focus or
+ * rescue timer is running or paused, back to planned/inbox when it ends.
+ */
+function markTaskInProgress(PDO $db, int $taskId, int $userId, bool $inProgress): void
+{
+    if ($inProgress) {
+        $db->prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ? AND user_id = ? AND status IN ('inbox', 'planned')")
+            ->execute([$taskId, $userId]);
+        return;
+    }
+    $db->prepare("UPDATE tasks SET status = CASE WHEN start_at IS NULL THEN 'inbox' ELSE 'planned' END WHERE id = ? AND user_id = ? AND status = 'in_progress'")
+        ->execute([$taskId, $userId]);
 }
 
 function runningFocusElapsed(array $session): int
@@ -1685,6 +1768,7 @@ function normalizedSubtasks(mixed $value): array
             $completed = false;
         }
         if ($title !== '') {
+            assertMaxLength($title, 255, '子任务');
             $normalized[] = ['id' => $id, 'title' => $title, 'completed' => $completed];
         }
     }
@@ -2050,6 +2134,32 @@ function userView(array $user): array
         'displayName' => $user['display_name'],
         'timezone' => $user['timezone'],
     ];
+}
+
+/** Answers 422 instead of letting the database reject an over-long value with a 500. */
+function assertMaxLength(string $value, int $max, string $label): void
+{
+    $length = function_exists('mb_strlen') ? mb_strlen($value) : strlen($value);
+    if ($length > $max) {
+        Http::json(['error' => "{$label}最多 {$max} 个字。"], 422);
+    }
+}
+
+/** A project or category id from the request, accepted only if it belongs to the user. */
+function ownedReference(PDO $db, string $table, ?int $id, int $userId): ?int
+{
+    if ($id === null) {
+        return null;
+    }
+    if (!in_array($table, ['projects', 'categories'], true)) {
+        throw new InvalidArgumentException('Invalid table.');
+    }
+    $statement = $db->prepare("SELECT id FROM {$table} WHERE id = ? AND user_id = ? LIMIT 1");
+    $statement->execute([$id, $userId]);
+    if ($statement->fetchColumn() === false) {
+        Http::json(['error' => $table === 'projects' ? '所选项目不存在。' : '所选分类不存在。'], 422);
+    }
+    return $id;
 }
 
 function nullableString(mixed $value): ?string
